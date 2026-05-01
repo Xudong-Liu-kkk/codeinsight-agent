@@ -1,0 +1,21 @@
+[project]
+name = "codeinsight-agent"
+version = "0.1.0"
+description = "只读代码库分析 Agent（uv 优先的 CLI 工作流）"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+# 暴露稳定的 CLI 入口，便于执行 `uv run codeinsight ...`。
+codeinsight = "codeinsight.cli:main"
+
+[dependency-groups]
+# 将测试工具放在 dev 组，保持运行时依赖最小化。
+dev = [
+    "pytest>=8.3.0",
+]
+
+[tool.pytest.ini_options]
+# 使用简洁的 pytest 输出，便于早期迭代时快速查看结果。
+addopts = "-q"
+testpaths = ["tests"]
