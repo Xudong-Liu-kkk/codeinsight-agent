@@ -8,7 +8,7 @@ import argparse
 import json
 from typing import Any
 
-from codeinsight.engine import run_overview, run_search
+from codeinsight.engine import run_diagnose, run_overview, run_read, run_search
 from codeinsight.schemas import AnalysisReport
 
 
@@ -30,6 +30,15 @@ def _render_report_text(report: AnalysisReport) -> str:
         # rec 表示单条建议，按列表形式输出。
         for rec in report.recommendations:
             lines.append(f"- {rec}")
+    if report.evidence:
+        lines.append("")
+        lines.append("证据：")
+        # evidence_item 表示一条可追溯证据，用于说明结论来源。
+        for evidence_item in report.evidence[:10]:
+            lines.append(
+                f"- {evidence_item.file_path}:{evidence_item.start_line}"
+                f" -> {evidence_item.snippet}"
+            )
     lines.append("")
     lines.append(f"置信度：{report.confidence}")
     return "\n".join(lines)
@@ -51,7 +60,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # parser 是顶层参数解析器，统一管理所有子命令。
     parser = argparse.ArgumentParser(prog="codeinsight", description="只读代码库分析命令行工具。")
-    # subparsers 用于挂载 overview/search 等子命令。
+    # subparsers 用于挂载 overview/search/read/diagnose 等子命令。
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # overview_parser 负责“项目概览”命令参数。
@@ -60,10 +69,28 @@ def _build_parser() -> argparse.ArgumentParser:
     overview_parser.add_argument("--json", action="store_true", help="以 JSON 形式输出报告。")
 
     # search_parser 负责“代码搜索”命令参数。
-    search_parser = subparsers.add_parser("search", help="按关键词搜索代码库（骨架版）。")
+    search_parser = subparsers.add_parser("search", help="按关键词搜索代码库。")
     search_parser.add_argument("--root", required=True, help="执行搜索的项目根目录。")
     search_parser.add_argument("--query", required=True, help="要搜索的关键词或符号。")
+    search_parser.add_argument("--glob", required=False, help="可选文件过滤模式，例如 *.py。")
     search_parser.add_argument("--json", action="store_true", help="以 JSON 形式输出报告。")
+
+    # read_parser 负责“文件读取”命令参数。
+    read_parser = subparsers.add_parser("read", help="读取项目内安全文件片段。")
+    read_parser.add_argument("--root", required=True, help="项目根目录。")
+    read_parser.add_argument("--path", required=True, help="相对于项目根目录的文件路径。")
+    read_parser.add_argument("--start", type=int, default=1, help="起始行号，默认 1。")
+    read_parser.add_argument("--end", type=int, required=False, help="结束行号，默认读取到文件末尾。")
+    read_parser.add_argument("--max-lines", type=int, default=300, help="最大返回行数，默认 300。")
+    read_parser.add_argument("--json", action="store_true", help="以 JSON 形式输出报告。")
+
+    # diagnose_parser 负责“错误诊断”命令参数。
+    diagnose_parser = subparsers.add_parser("diagnose", help="根据 Python traceback 生成诊断报告。")
+    diagnose_parser.add_argument("--root", required=True, help="需要诊断的项目根目录。")
+    diagnose_input = diagnose_parser.add_mutually_exclusive_group(required=True)
+    diagnose_input.add_argument("--text", help="直接传入 traceback 或错误文本。")
+    diagnose_input.add_argument("--traceback-file", help="从文本文件读取 traceback。")
+    diagnose_parser.add_argument("--json", action="store_true", help="以 JSON 形式输出报告。")
 
     return parser
 
@@ -88,11 +115,25 @@ def main(argv: list[str] | None = None) -> int:
     # 根据命令类型分发到搜索处理逻辑。
     if args.command == "search":
         # report 是搜索命令返回的统一结构化报告。
-        report = run_search(args_dict["root"], args_dict["query"])
+        report = run_search(args_dict["root"], args_dict["query"], args_dict.get("glob"))
         _print_report(report, args_dict["json"])
         return 0
 
-    # 理论上不会到达此分支；保留兜底可提高健壮性。
-    parser.error(f"不支持的命令：{args.command}")
-    return 2
+    # 根据命令类型分发到文件读取逻辑。
+    if args.command == "read":
+        # report 是读取命令返回的统一结构化报告。
+        report = run_read(
+            args_dict["root"],
+            args_dict["path"],
+            start_line=args_dict["start"],
+            end_line=args_dict.get("end"),
+            max_lines=args_dict["max_lines"],
+        )
+        _print_report(report, args_dict["json"])
+        return 0
 
+    # diagnose 是剩余的合法命令；argparse 已保证不会出现其他命令。
+    # report 是诊断命令返回的统一结构化报告。
+    report = run_diagnose(args_dict["root"], text=args_dict.get("text"), traceback_file=args_dict.get("traceback_file"))
+    _print_report(report, args_dict["json"])
+    return 0

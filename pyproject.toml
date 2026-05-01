@@ -19,3 +19,7 @@ dev = [
 # 使用简洁的 pytest 输出，便于早期迭代时快速查看结果。
 addopts = "-q"
 testpaths = ["tests"]
+
+[tool.uv]
+# 将当前项目按可打包项目处理，确保安装 project.scripts 入口命令。
+package = true
