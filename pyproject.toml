@@ -3,7 +3,9 @@ name = "codeinsight-agent"
 version = "0.1.0"
 description = "只读代码库分析 Agent（uv 优先的 CLI 工作流）"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "openai>=2.8.1",
+]
 
 [project.scripts]
 # 暴露稳定的 CLI 入口，便于执行 `uv run codeinsight ...`。
