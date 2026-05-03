@@ -11,7 +11,7 @@ from openai import OpenAI
 
 
 # DEFAULT_PROVIDER 为默认 Provider 名称。
-DEFAULT_PROVIDER = "openai"
+DEFAULT_PROVIDER = "ollama"
 # DEFAULT_OPENAI_BASE_URL 为 OpenAI 官方兼容接口地址。
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 # DEFAULT_OPENAI_MODEL 为 OpenAI 默认模型名。
@@ -27,7 +27,7 @@ DEFAULT_QWEN_MODEL = "qwen-plus"
 # DEFAULT_OLLAMA_BASE_URL 为本地 Ollama OpenAI 兼容接口地址。
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434/v1"
 # DEFAULT_OLLAMA_MODEL 为 Ollama 默认模型名。
-DEFAULT_OLLAMA_MODEL = "qwen2.5-coder:7b"
+DEFAULT_OLLAMA_MODEL = "deepseek-r1:latest"
 
 
 @dataclass(slots=True)

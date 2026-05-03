@@ -152,6 +152,49 @@ def _build_messages(root: str, question: str, context: ToolContext) -> list[dict
     ]
 
 
+def _call_llm_for_report(
+    messages: list[dict[str, str]],
+    provider: str | None,
+    client: ChatClient | None,
+    command_name: str,
+) -> tuple[str | None, AnalysisReport | None]:
+    """调用大模型，并把配置或调用异常转换为结构化报告。"""
+
+    try:
+        # llm_client 是可注入的聊天客户端，测试时可用假客户端替代真实模型。
+        llm_client = client or create_llm_client(provider=provider)
+        answer = llm_client.chat(messages, temperature=0.2).strip()
+    except LLMConfigError as exc:
+        return None, AnalysisReport(
+            summary=f"{command_name} 失败：{exc}",
+            findings=[
+                Finding(
+                    title="大模型配置无效",
+                    severity="high",
+                    detail=str(exc),
+                    suggestion="请配置 CODEINSIGHT_LLM_PROVIDER 以及对应 Provider 的 API Key。",
+                )
+            ],
+            recommendations=["可先使用 `CODEINSIGHT_LLM_PROVIDER=ollama` 连接本地 Ollama。"],
+            confidence="high",
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI 边界需要把模型调用异常转为结构化报告。
+        return None, AnalysisReport(
+            summary=f"{command_name} 调用大模型失败：{exc}",
+            findings=[
+                Finding(
+                    title="大模型调用失败",
+                    severity="high",
+                    detail=str(exc),
+                    suggestion="请检查网络、模型名称、base_url 和 API Key 是否正确。",
+                )
+            ],
+            recommendations=["确认 Provider 配置后重试。"],
+            confidence="medium",
+        )
+    return answer, None
+
+
 def run_ask(root: str, question: str, provider: str | None = None, client: ChatClient | None = None) -> AnalysisReport:
     """运行自然语言 ask Agent。"""
 
@@ -188,38 +231,9 @@ def run_ask(root: str, question: str, provider: str | None = None, client: ChatC
 
     context = _collect_tool_context(str(root_path), question)
     messages = _build_messages(str(root_path), question.strip(), context)
-    try:
-        # llm_client 是可注入的聊天客户端，测试时可用假客户端替代真实模型。
-        llm_client = client or create_llm_client(provider=provider)
-        answer = llm_client.chat(messages, temperature=0.2).strip()
-    except LLMConfigError as exc:
-        return AnalysisReport(
-            summary=f"ask 失败：{exc}",
-            findings=[
-                Finding(
-                    title="大模型配置无效",
-                    severity="high",
-                    detail=str(exc),
-                    suggestion="请配置 CODEINSIGHT_LLM_PROVIDER 以及对应 Provider 的 API Key。",
-                )
-            ],
-            recommendations=["可先使用 `CODEINSIGHT_LLM_PROVIDER=ollama` 连接本地 Ollama。"],
-            confidence="high",
-        )
-    except Exception as exc:  # noqa: BLE001 - CLI 边界需要把模型调用异常转为结构化报告。
-        return AnalysisReport(
-            summary=f"ask 调用大模型失败：{exc}",
-            findings=[
-                Finding(
-                    title="大模型调用失败",
-                    severity="high",
-                    detail=str(exc),
-                    suggestion="请检查网络、模型名称、base_url 和 API Key 是否正确。",
-                )
-            ],
-            recommendations=["确认 Provider 配置后重试。"],
-            confidence="medium",
-        )
+    answer, error_report = _call_llm_for_report(messages, provider, client, command_name="ask")
+    if error_report is not None:
+        return error_report
 
     if not answer:
         answer = "大模型没有返回有效内容。请尝试换一种问法，或检查模型服务是否正常。"
@@ -242,5 +256,105 @@ def run_ask(root: str, question: str, provider: str | None = None, client: ChatC
         ],
         evidence=evidence[:10],
         recommendations=["继续使用 ask 追问具体文件、函数或错误现象。"],
+        confidence="medium",
+    )
+
+
+def _build_review_messages(root: str, file_path: str, read_report: AnalysisReport) -> list[dict[str, str]]:
+    """构造代码审查命令的大模型消息。"""
+
+    system_prompt = (
+        "你是 CodeInsight Agent 的只读代码审查助手。"
+        "你只能审查和解释代码，不能声称已经修改代码。"
+        "回答必须使用中文，并按照：总体评价、主要风险、改进建议、可选后续检查 的结构输出。"
+        "请关注正确性、异常处理、安全边界、可维护性、复杂度和测试覆盖。"
+    )
+    user_prompt = (
+        f"项目根目录：{Path(root).resolve()}\n"
+        f"待审查文件：{file_path}\n\n"
+        "以下是只读读取工具返回的文件内容：\n\n"
+        f"{_report_to_prompt_section('待审查源码', read_report)}"
+    )
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+
+def run_review(
+    root: str,
+    file_path: str,
+    provider: str | None = None,
+    client: ChatClient | None = None,
+    max_lines: int = 400,
+) -> AnalysisReport:
+    """对指定项目文件执行只读代码审查。"""
+
+    root_path = Path(root).resolve()
+    if not root_path.exists() or not root_path.is_dir():
+        return AnalysisReport(
+            summary=f"review 失败：项目根目录不存在：{root_path}",
+            findings=[
+                Finding(
+                    title="根目录路径无效",
+                    severity="high",
+                    detail="无法解析你提供的项目根目录路径。",
+                    suggestion="请通过 --root 传入一个真实存在的目录。",
+                )
+            ],
+            recommendations=["检查路径后重新执行命令。"],
+            confidence="high",
+        )
+    if not file_path.strip():
+        return AnalysisReport(
+            summary="review 失败：文件路径为空。",
+            findings=[
+                Finding(
+                    title="文件路径为空",
+                    severity="medium",
+                    detail="review 命令要求 --path 必须是非空字符串。",
+                    suggestion="请传入相对于 --root 的文件路径。",
+                )
+            ],
+            recommendations=["示例：`review --path src/codeinsight/agent.py`"],
+            confidence="high",
+        )
+
+    read_report = run_read(str(root_path), file_path, start_line=1, end_line=None, max_lines=max_lines)
+    if not read_report.evidence:
+        return AnalysisReport(
+            summary=f"review 失败：无法读取待审查文件 {file_path!r}。",
+            findings=[
+                Finding(
+                    title="待审查文件读取失败",
+                    severity="high",
+                    detail=read_report.summary,
+                    suggestion="请确认文件位于项目根目录内、不是敏感文件，且为 UTF-8 文本。",
+                )
+            ],
+            evidence=read_report.evidence,
+            recommendations=["可先使用 read 命令验证文件是否可读取。"],
+            confidence="high",
+        )
+
+    messages = _build_review_messages(str(root_path), file_path.strip(), read_report)
+    answer, error_report = _call_llm_for_report(messages, provider, client, command_name="review")
+    if error_report is not None:
+        return error_report
+    if not answer:
+        answer = "大模型没有返回有效审查内容。请尝试缩小文件范围，或检查模型服务是否正常。"
+
+    return AnalysisReport(
+        summary=answer,
+        findings=[
+            Finding(
+                title="review 已完成只读代码审查",
+                severity="info",
+                detail=f"大模型已基于文件 {file_path!r} 的只读内容生成审查建议。",
+                suggestion="如文件较大，可分段 review，或结合 ask 追问具体风险点。",
+            )
+        ],
+        evidence=read_report.evidence[:3],
+        recommendations=["优先处理审查结果中的正确性、安全性和异常处理问题。"],
         confidence="medium",
     )

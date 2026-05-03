@@ -7,7 +7,7 @@
 from pathlib import Path
 
 from codeinsight.schemas import AnalysisReport, CodeEvidence, Finding
-from codeinsight.tools import list_project_tree, load_traceback_source, parse_python_traceback, read_file_lines, search_code
+from codeinsight.tools import list_project_tree, load_traceback_source, parse_python_traceback, parse_pyproject_deps, read_file_lines, search_code
 
 
 def run_overview(root: str) -> AnalysisReport:
@@ -181,6 +181,141 @@ def run_search(root: str, query: str, glob_pattern: str | None = None) -> Analys
         ],
         evidence=evidence_list,
         recommendations=["如需收敛范围，可增加 `--glob \"*.py\"`。"],
+        confidence="high",
+    )
+
+
+def run_deps(root: str) -> AnalysisReport:
+    """分析项目依赖配置并生成报告。"""
+
+    root_path = Path(root).resolve()
+    if not root_path.exists() or not root_path.is_dir():
+        return AnalysisReport(
+            summary=f"依赖分析失败：项目根目录不存在：{root_path}",
+            findings=[
+                Finding(
+                    title="根目录路径无效",
+                    severity="high",
+                    detail="无法解析你提供的项目根目录路径。",
+                    suggestion="请通过 --root 传入一个真实存在的目录。",
+                )
+            ],
+            recommendations=["检查路径后重新执行命令。"],
+            confidence="high",
+        )
+
+    try:
+        deps_result = parse_pyproject_deps(root_path)
+    except FileNotFoundError as exc:
+        return AnalysisReport(
+            summary=f"依赖分析失败：{exc}",
+            findings=[
+                Finding(
+                    title="pyproject.toml 不存在",
+                    severity="high",
+                    detail=str(exc),
+                    suggestion="当前仅支持解析 pyproject.toml 格式的 Python 项目依赖。",
+                )
+            ],
+            recommendations=["在项目根目录创建 pyproject.toml 后重试。"],
+            confidence="high",
+        )
+    except Exception as exc:
+        return AnalysisReport(
+            summary=f"依赖分析失败：{exc}",
+            findings=[
+                Finding(
+                    title="依赖配置解析失败",
+                    severity="high",
+                    detail=str(exc),
+                    suggestion="请检查 pyproject.toml 格式是否正确。",
+                )
+            ],
+            recommendations=["确认 pyproject.toml 符合 PEP 621 规范。"],
+            confidence="high",
+        )
+
+    findings: list[Finding] = []
+    evidence_list: list[CodeEvidence] = []
+
+    # 运行时依赖统计。
+    runtime_names = [dep.name for dep in deps_result.runtime_deps]
+    if runtime_names:
+        findings.append(
+            Finding(
+                title=f"运行时依赖（{deps_result.total_runtime} 个）",
+                severity="info",
+                detail=f"依赖项：{', '.join(runtime_names)}",
+                suggestion="确认所有运行时依赖均为项目实际所需。",
+            )
+        )
+    else:
+        findings.append(
+            Finding(
+                title="无运行时依赖",
+                severity="medium",
+                detail="pyproject.toml 中未声明 runtime 依赖。",
+                suggestion="纯工具项目或无外部依赖时这属于正常情况。",
+            )
+        )
+
+    # 开发依赖统计。
+    dev_names = [dep.name for dep in deps_result.dev_deps]
+    if dev_names:
+        findings.append(
+            Finding(
+                title=f"开发依赖（{deps_result.total_dev} 个）",
+                severity="info",
+                detail=f"依赖项：{', '.join(dev_names)}",
+                suggestion="开发依赖不会被最终用户安装，仅影响开发环境。",
+            )
+        )
+
+    # 锁文件检查。
+    if deps_result.has_lock_file:
+        findings.append(
+            Finding(
+                title="锁文件存在",
+                severity="info",
+                detail=f"已检测到 {deps_result.lock_file_path}，项目依赖已锁定。",
+                suggestion="定期更新锁文件以获取安全补丁。",
+            )
+        )
+    else:
+        findings.append(
+            Finding(
+                title="锁文件缺失",
+                severity="high",
+                detail="未检测到 uv.lock 或类似锁文件。",
+                suggestion="运行 `uv lock` 生成锁文件，确保可复现构建。",
+            )
+        )
+
+    # 将依赖列表作为证据。
+    if runtime_names:
+        evidence_list.append(
+            CodeEvidence(
+                file_path=str(root_path / "pyproject.toml"),
+                start_line=1,
+                end_line=1,
+                snippet="\n".join(f"{dep.name} {dep.version_spec}" for dep in deps_result.runtime_deps),
+                reason="运行时依赖列表。",
+            )
+        )
+
+    return AnalysisReport(
+        summary=(
+            f"依赖分析完成：运行时 {deps_result.total_runtime} 个，"
+            f"开发 {deps_result.total_dev} 个，"
+            f"锁文件{'已' if deps_result.has_lock_file else '未'}检测到。"
+        ),
+        findings=findings,
+        evidence=evidence_list,
+        recommendations=[
+            "保持依赖最小化，避免引入不必要的第三方库。",
+            "定期检查依赖是否存在已知漏洞。",
+            "锁文件应纳入版本管理以确保可复现构建。",
+        ],
         confidence="high",
     )
 

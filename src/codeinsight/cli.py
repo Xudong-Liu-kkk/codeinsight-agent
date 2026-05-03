@@ -8,8 +8,8 @@ import argparse
 import json
 from typing import Any
 
-from codeinsight.agent import run_ask
-from codeinsight.engine import run_diagnose, run_overview, run_read, run_search
+from codeinsight.agent import run_ask, run_review
+from codeinsight.engine import run_deps, run_diagnose, run_overview, run_read, run_search
 from codeinsight.schemas import AnalysisReport
 
 
@@ -93,12 +93,25 @@ def _build_parser() -> argparse.ArgumentParser:
     diagnose_input.add_argument("--traceback-file", help="从文本文件读取 traceback。")
     diagnose_parser.add_argument("--json", action="store_true", help="以 JSON 形式输出报告。")
 
+    # deps_parser 负责"依赖分析"命令参数。
+    deps_parser = subparsers.add_parser("deps", help="分析项目依赖配置与风险。")
+    deps_parser.add_argument("--root", required=True, help="需要分析的项目根目录。")
+    deps_parser.add_argument("--json", action="store_true", help="以 JSON 形式输出报告。")
+
     # ask_parser 负责“自然语言提问”命令参数。
     ask_parser = subparsers.add_parser("ask", help="让大模型基于只读工具分析代码库问题。")
     ask_parser.add_argument("--root", required=True, help="需要分析的项目根目录。")
     ask_parser.add_argument("--question", required=True, help="要提给 Agent 的自然语言问题。")
     ask_parser.add_argument("--provider", required=False, help="可选 Provider，例如 openai、deepseek、qwen、ollama。")
     ask_parser.add_argument("--json", action="store_true", help="以 JSON 形式输出报告。")
+
+    # review_parser 负责“代码审查”命令参数。
+    review_parser = subparsers.add_parser("review", help="对指定文件执行只读代码审查。")
+    review_parser.add_argument("--root", required=True, help="项目根目录。")
+    review_parser.add_argument("--path", required=True, help="相对于项目根目录的文件路径。")
+    review_parser.add_argument("--provider", required=False, help="可选 Provider，例如 openai、deepseek、qwen、ollama。")
+    review_parser.add_argument("--max-lines", type=int, default=400, help="最大读取行数，默认 400。")
+    review_parser.add_argument("--json", action="store_true", help="以 JSON 形式输出报告。")
 
     return parser
 
@@ -147,8 +160,27 @@ def main(argv: list[str] | None = None) -> int:
         _print_report(report, args_dict["json"])
         return 0
 
-    # ask 是剩余的合法命令；argparse 已保证不会出现其他命令。
-    # report 是自然语言 Agent 返回的统一结构化报告。
-    report = run_ask(args_dict["root"], args_dict["question"], provider=args_dict.get("provider"))
+    # 根据命令类型分发到依赖分析逻辑。
+    if args.command == "deps":
+        # report 是依赖分析命令返回的统一结构化报告。
+        report = run_deps(args_dict["root"])
+        _print_report(report, args_dict["json"])
+        return 0
+
+    # 根据命令类型分发到自然语言 ask 逻辑。
+    if args.command == "ask":
+        # report 是自然语言 Agent 返回的统一结构化报告。
+        report = run_ask(args_dict["root"], args_dict["question"], provider=args_dict.get("provider"))
+        _print_report(report, args_dict["json"])
+        return 0
+
+    # review 是剩余的合法命令；argparse 已保证不会出现其他命令。
+    # report 是代码审查命令返回的统一结构化报告。
+    report = run_review(
+        args_dict["root"],
+        args_dict["path"],
+        provider=args_dict.get("provider"),
+        max_lines=args_dict["max_lines"],
+    )
     _print_report(report, args_dict["json"])
     return 0
