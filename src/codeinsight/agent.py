@@ -1,7 +1,14 @@
 """CodeInsight Agent 编排层。
 
-本模块提供 ask（自然语言问答）和 review（代码审查）两个 Agent 入口，
-底层通过 LangChain 框架调用只读工具并由大模型生成回答。
+本模块提供三个 Agent 入口，底层通过 LangChain 框架调用只读工具
+并由大模型生成回答：
+
+  run_ask()      — 自然语言问答，通过 LangGraph 多步自主分析图执行
+  run_review()   — 单文件只读代码审查
+  run_pr_review()— Git 变更 PR 审查，组合 git diff + 文件读取 + LLM
+
+每个入口均返回统一的 AnalysisReport 结构，包含回答摘要、发现列表、
+证据链（可追溯结论来源）、建议清单和置信度。
 """
 
 from pathlib import Path
@@ -10,10 +17,11 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from codeinsight.agent_tools import _report_to_text, create_tools
 from codeinsight.engine import run_read
+from codeinsight.git_tool import get_branch_diff, get_commit_diff, get_uncommitted_diff
 from codeinsight.graph import build_ask_graph
-from codeinsight.llm import LLMConfigError, create_langchain_chat_model
+from codeinsight.llm import LLMConfigError, create_langchain_chat_model, load_env_from_dir
 from codeinsight.memory import ProjectMemory
-from codeinsight.schemas import AnalysisReport, Finding
+from codeinsight.schemas import AnalysisReport, CodeEvidence, Finding
 
 # —— 提示词 ——
 
@@ -33,6 +41,7 @@ def run_ask(root: str, question: str, provider: str | None = None) -> AnalysisRe
     大模型通过 LangChain Agent 自主决定调用哪些只读工具，
     基于工具返回的真实代码上下文生成中文分析回答。
     """
+    load_env_from_dir(root)
     root_path = Path(root).resolve()
     if not root_path.exists() or not root_path.is_dir():
         return AnalysisReport(
@@ -151,6 +160,7 @@ def run_review(
     max_lines: int = 400,
 ) -> AnalysisReport:
     """对指定项目文件执行只读代码审查。"""
+    load_env_from_dir(root)
     root_path = Path(root).resolve()
     if not root_path.exists() or not root_path.is_dir():
         return AnalysisReport(
@@ -254,5 +264,194 @@ def run_review(
         ],
         evidence=read_report.evidence[:3],
         recommendations=["优先处理审查结果中的正确性、安全性和异常处理问题。"],
+        confidence="medium",
+    )
+
+
+# —— pr-review 命令 ——
+# 对 Git 变更进行只读审查，组合 git diff + read + LLM 三步流程。
+
+PR_REVIEW_SYSTEM_PROMPT = (
+    "你是 CodeInsight Agent 的 Git PR 代码审查助手。"
+    "你只能审查和解释代码变更，不能声称已经修改代码。"
+    "回答必须使用中文，并按以下结构输出：\n\n"
+    "## 变更概要\n（本次变更做了什么，涉及哪些文件）\n\n"
+    "## 风险评估\n"
+    "- 🛑 高风险：可能导致运行时异常、数据丢失、安全问题\n"
+    "- ⚠️ 中风险：可能导致边缘情况异常、性能退化\n"
+    "- ℹ️ 低风险：样式、注释、命名调整\n\n"
+    "## 逐文件 Review\n对每个变更文件给出具体评价和改进建议\n\n"
+    "## 总结建议\n（合并前建议补充的操作，如测试、文档、CI 检查）"
+)
+
+
+def run_pr_review(
+    root: str,
+    base: str | None = None,
+    head: str | None = None,
+    commit: str | None = None,
+    provider: str | None = None,
+    max_files: int = 10,
+) -> AnalysisReport:
+    """对 Git 变更执行只读 PR 审查。
+
+    工作流：
+      1. 通过 git diff（或 git show）获取变更内容和文件列表
+      2. 对每个变更文件调 run_read 读取当前完整内容
+      3. 将 diff + 文件内容组装为审查 prompt，交给大模型
+      4. 模型按"变更概要 → 风险评估 → 逐文件 Review → 总结建议"结构输出
+
+    Args:
+        root: 项目根目录。
+        base: 基准分支名（预留，当前未实现分支对比）。
+        head: 目标分支名（预留，当前未实现分支对比）。
+        commit: 要审查的 commit-ish，如 "HEAD"、"abc1234"。不传则审查未提交的变更。
+        provider: 可选的 Provider 名称，不传则使用环境变量配置。
+        max_files: 最多读取并审查的文件数量，超出的文件仅在 diff 中显示。
+
+    Returns:
+        统一 AnalysisReport，summary 字段包含完整的审查报告文本。
+    """
+
+    # 确保 --root 目录下的 .env 文件（如果存在）已被加载，
+    # 这样即使直接调用 run_pr_review 而非通过 CLI 入口也能读取配置。
+    load_env_from_dir(root)
+    root_path = Path(root).resolve()
+    if not root_path.exists() or not root_path.is_dir():
+        return AnalysisReport(
+            summary=f"pr-review 失败：项目根目录不存在：{root_path}",
+            findings=[
+                Finding(
+                    title="根目录路径无效", severity="high",
+                    detail="无法解析你提供的项目根目录路径。",
+                    suggestion="请通过 --root 传入一个真实存在的目录。",
+                )
+            ],
+            recommendations=["检查路径后重新执行命令。"],
+            confidence="high",
+        )
+
+    # —— 第一步：获取 Git 变更 ——
+    # 三种模式（按优先级）：
+    #   1. --commit 指定时，审查该 commit 的变更（git show）。
+    #   2. --base + --head 指定时，审查两个分支的差异（三点语法）。
+    #   3. 默认审查工作区未提交的变更（git diff + git diff --cached）。
+    try:
+        if commit:
+            diff = get_commit_diff(root_path, commit)
+        elif base and head:
+            diff = get_branch_diff(root_path, base, head)
+        else:
+            diff = get_uncommitted_diff(root_path)
+    except RuntimeError as exc:
+        return AnalysisReport(
+            summary=f"pr-review 失败：Git 操作异常：{exc}",
+            findings=[
+                Finding(
+                    title="Git 命令执行失败", severity="high",
+                    detail=str(exc),
+                    suggestion="请确认当前目录是 Git 仓库，且 git 命令可用。",
+                )
+            ],
+            recommendations=["在项目根目录下执行 pr-review 命令。"],
+            confidence="high",
+        )
+
+    if not diff.files_changed or not diff.diff_content.strip():
+        return AnalysisReport(
+            summary="pr-review：未检测到代码变更。",
+            findings=[
+                Finding(
+                    title="无变更文件", severity="info",
+                    detail="当前工作区没有未提交的修改。",
+                    suggestion="修改代码后再执行 pr-review，或使用 --commit 指定历史提交。",
+                )
+            ],
+            recommendations=[],
+            confidence="high",
+        )
+
+    # —— 第二步：读取变更文件的当前内容 ——
+    # 仅读取前 max_files 个文件，避免 token 溢出。
+    # diff_content 也截断到 4000 字符，大型 diff 只审前部。
+    evidence_list: list[CodeEvidence] = []
+    file_contents: list[str] = []
+    for f in diff.files_changed[:max_files]:
+        try:
+            read_report = run_read(str(root_path), f, start_line=1, end_line=None, max_lines=200)
+            if read_report.evidence:
+                evidence_list.extend(read_report.evidence)
+                file_contents.append(
+                    f"=== {f} ===\n{read_report.evidence[0].snippet}"
+                )
+            else:
+                file_contents.append(f"=== {f} ===\n（文件无法读取）")
+        except Exception:
+            file_contents.append(f"=== {f} ===\n（读取失败）")
+
+    try:
+        chat_model = create_langchain_chat_model(provider=provider)
+    except LLMConfigError as exc:
+        return AnalysisReport(
+            summary=f"pr-review 失败：{exc}",
+            findings=[
+                Finding(
+                    title="大模型配置无效", severity="high",
+                    detail=str(exc),
+                    suggestion="请配置 CODEINSIGHT_LLM_PROVIDER 以及对应 Provider 的 API Key。",
+                )
+            ],
+            recommendations=["可先使用 `CODEINSIGHT_LLM_PROVIDER=ollama` 连接本地 Ollama。"],
+            confidence="high",
+        )
+
+    # —— 第三步：组装 prompt 并调用大模型 ——
+    # 将 diff（变更差异）+ 文件当前内容一起交给模型，让模型既能
+    # 看到"改了什么"也能看到"完整的文件长什么样"，避免断章取义。
+    review_prompt = (
+        f"Git 变更统计：{diff.summary}\n"
+        f"变更文件数：{len(diff.files_changed)} 个\n\n"
+        "=== Git Diff（变更内容，context=5 行）===\n"
+        f"{diff.diff_content[:4000]}\n\n"
+        "=== 变更文件当前内容（前 200 行）===\n"
+        f"{'\n\n'.join(file_contents)}"
+    )
+
+    try:
+        response = chat_model.invoke([
+            SystemMessage(content=PR_REVIEW_SYSTEM_PROMPT),
+            HumanMessage(content=review_prompt),
+        ])
+        answer = str(response.content) if response.content else "大模型没有返回有效审查内容。"
+    except Exception as exc:
+        return AnalysisReport(
+            summary=f"pr-review 调用大模型失败：{exc}",
+            findings=[
+                Finding(
+                    title="大模型调用失败", severity="high",
+                    detail=str(exc),
+                    suggestion="请检查网络、模型名称、base_url 和 API Key 是否正确。",
+                )
+            ],
+            recommendations=["确认 Provider 配置后重试。"],
+            confidence="medium",
+        )
+
+    return AnalysisReport(
+        summary=answer,
+        findings=[
+            Finding(
+                title="pr-review 已完成 Git 变更审查",
+                severity="info",
+                detail=f"审查了 {min(len(diff.files_changed), max_files)}/{len(diff.files_changed)} 个变更文件。{diff.summary}",
+                suggestion="优先处理高风险项，补充测试后合并。",
+            )
+        ],
+        evidence=evidence_list[:10],
+        recommendations=[
+            "审查结果中的高风险项应在合并前修复。",
+            "建议对新增或修改的函数补充单元测试。",
+            "确认变更不会破坏现有 CI 流程。",
+        ],
         confidence="medium",
     )

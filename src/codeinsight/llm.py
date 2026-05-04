@@ -119,7 +119,6 @@ def load_llm_config(provider: str | None = None) -> LLMConfig:
     if defaults is None:
         supported = ", ".join(get_supported_providers())
         raise LLMConfigError(f"不支持的 LLM Provider：{provider_name}。当前支持：{supported}。")
-
     # 每个 Provider 都允许统一变量和专属变量共同覆盖 model/base_url。
     provider_upper = provider_name.upper()
     model = (
@@ -136,18 +135,40 @@ def load_llm_config(provider: str | None = None) -> LLMConfig:
     return LLMConfig(provider=provider_name, api_key=api_key, model=model, base_url=base_url)
 
 
+def load_env_from_dir(root: str) -> None:
+    """从指定目录加载 .env 文件中的环境变量。
+
+    已存在的系统环境变量不会被 .env 覆盖（override=False）。
+    """
+    from pathlib import Path
+
+    from dotenv import load_dotenv
+
+    env_path = Path(root) / ".env"
+    if env_path.exists():
+        load_dotenv(env_path, override=False)
+
+
 def create_langchain_chat_model(provider: str | None = None):
     """根据配置创建 LangChain ChatOpenAI 实例。
 
     允许 Agent 层通过 LangChain 框架使用统一的 Provider 配置，
     包括自定义 base_url 和 api_key，兼容 openai / deepseek / qwen / ollama。
+
+    针对 DeepSeek V4 系列模型自动关闭 thinking 模式，
+    避免 reasoning_content 在 Agent 多轮对话中被丢弃导致 API 400 错误。
     """
     from langchain_openai import ChatOpenAI
 
     config = load_llm_config(provider=provider)
+    extra_body: dict | None = None
+    if config.provider == "deepseek" and "v4" in config.model.lower():
+        extra_body = {"thinking": {"type": "disabled"}}
+
     return ChatOpenAI(
         model=config.model,
         api_key=config.api_key,
         base_url=config.base_url,
         temperature=0.2,
+        **({"extra_body": extra_body} if extra_body else {}),
     )

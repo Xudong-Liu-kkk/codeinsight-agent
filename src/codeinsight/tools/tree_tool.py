@@ -8,11 +8,18 @@ from pathlib import Path
 DEFAULT_IGNORED_DIRS: set[str] = {
     ".git",
     ".venv",
+    ".claude",
+    ".codeinsight",
+    ".idea",
+    ".pytest_cache",
+    ".vscode",
     "__pycache__",
     "node_modules",
     "dist",
     "build",
 }
+# 默认忽略的目录名后缀，例如 *.egg-info。
+DEFAULT_IGNORED_DIR_SUFFIXES: tuple[str, ...] = (".egg-info",)
 
 
 @dataclass(slots=True)
@@ -48,8 +55,12 @@ def list_project_tree(root: Path, max_depth: int = 3) -> TreeSummary:
             return
         # entries 获取当前目录下排序后的子项。
         entries = sorted(current.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower()))
-        # visible_entries 过滤掉忽略目录，减少噪声。
-        visible_entries = [entry for entry in entries if entry.name not in DEFAULT_IGNORED_DIRS]
+        # visible_entries 过滤掉忽略目录（按名称或后缀），减少噪声。
+        visible_entries = [
+            entry for entry in entries
+            if entry.name not in DEFAULT_IGNORED_DIRS
+            and not entry.name.endswith(DEFAULT_IGNORED_DIR_SUFFIXES)
+        ]
         for index, entry in enumerate(visible_entries):
             # is_last 用于决定树状连接符样式。
             is_last = index == len(visible_entries) - 1

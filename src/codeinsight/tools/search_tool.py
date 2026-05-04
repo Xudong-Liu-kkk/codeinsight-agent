@@ -11,10 +11,26 @@ import subprocess
 DEFAULT_IGNORED_DIRS: set[str] = {
     ".git",
     ".venv",
+    ".claude",
+    ".codeinsight",
+    ".idea",
+    ".pytest_cache",
+    ".vscode",
     "__pycache__",
     "node_modules",
     "dist",
     "build",
+}
+# 默认忽略的目录名后缀，例如 *.egg-info。
+DEFAULT_IGNORED_DIR_SUFFIXES: tuple[str, ...] = (".egg-info",)
+# 搜索时默认忽略的非源码文件，避免证据中出现锁文件、配置等噪声。
+DEFAULT_IGNORED_FILES: set[str] = {
+    "uv.lock",
+    "poetry.lock",
+    "Pipfile.lock",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
 }
 
 
@@ -37,6 +53,9 @@ def _search_with_rg(root: Path, query: str, glob_pattern: str | None, max_hits: 
     cmd = ["rg", "--line-number", "--no-heading", "--color", "never", query, str(root)]
     if glob_pattern:
         cmd.extend(["--glob", glob_pattern])
+    # 排除锁文件等非源码文件，避免噪声证据。
+    for ignored_file in DEFAULT_IGNORED_FILES:
+        cmd.extend(["--glob", f"!{ignored_file}"])
     # head_limit 通过 rg 的 max-count 控制结果规模。
     cmd.extend(["--max-count", str(max_hits)])
     # completed 为子进程执行结果对象。
@@ -64,10 +83,17 @@ def _search_with_python(root: Path, query: str, glob_pattern: str | None, max_hi
 
     hits: list[SearchHit] = []
     for current_root, dir_names, file_names in root.walk():
-        # 过滤忽略目录，减少扫描体积。
-        dir_names[:] = [name for name in dir_names if name not in DEFAULT_IGNORED_DIRS]
+        # 过滤忽略目录（按名称或后缀），减少扫描体积。
+        dir_names[:] = [
+            name for name in dir_names
+            if name not in DEFAULT_IGNORED_DIRS
+            and not name.endswith(DEFAULT_IGNORED_DIR_SUFFIXES)
+        ]
         current_path = Path(current_root)
         for file_name in file_names:
+            # 跳过默认忽略的非源码文件（锁文件等）。
+            if file_name in DEFAULT_IGNORED_FILES:
+                continue
             # glob_pattern 存在时仅保留匹配文件。
             if glob_pattern and not fnmatch(file_name, glob_pattern):
                 continue

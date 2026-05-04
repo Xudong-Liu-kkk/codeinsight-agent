@@ -8,8 +8,9 @@ import argparse
 import json
 from typing import Any
 
-from codeinsight.agent import run_ask, run_review
+from codeinsight.agent import run_ask, run_pr_review, run_review
 from codeinsight.engine import run_deps, run_diagnose, run_overview, run_read, run_search
+from codeinsight.llm import load_env_from_dir
 from codeinsight.schemas import AnalysisReport
 
 
@@ -116,11 +117,23 @@ def _build_parser() -> argparse.ArgumentParser:
     review_parser.add_argument("--max-lines", type=int, default=400, help="最大读取行数，默认 400。")
     review_parser.add_argument("--json", action="store_true", help="以 JSON 形式输出报告。")
 
+    # pr_review_parser 负责"Git PR 审查"命令参数。
+    pr_review_parser = subparsers.add_parser("pr-review", help="对 Git 变更执行只读 PR 审查。")
+    pr_review_parser.add_argument("--root", required=True, help="项目根目录。")
+    pr_review_parser.add_argument("--base", required=False, help="对比的基准分支，如 main。与 --head 配合使用。")
+    pr_review_parser.add_argument("--head", required=False, help="对比的目标分支，如 feature-x。与 --base 配合使用。")
+    pr_review_parser.add_argument("--commit", required=False, help="审查指定的 commit。")
+    pr_review_parser.add_argument("--provider", required=False, help="可选 Provider，例如 openai、deepseek、qwen、ollama。")
+    pr_review_parser.add_argument("--json", action="store_true", help="以 JSON 形式输出报告。")
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     """CLI 主入口：解析参数并分发到对应引擎函数。"""
+
+    # 先加载当前目录的 .env（如果存在）。
+    load_env_from_dir(".")
 
     # 先构建参数解析器，确保命令协议集中定义。
     parser = _build_parser()
@@ -128,6 +141,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     # args_dict 将参数对象转为字典，便于按键访问。
     args_dict: dict[str, Any] = vars(args)
+
+    # 再加载 --root 目录的 .env（如果指定且不同于当前目录）。
+    if args_dict.get("root") and args_dict["root"] != ".":
+        load_env_from_dir(args_dict["root"])
 
     # 根据命令类型分发到概览处理逻辑。
     if args.command == "overview":
@@ -174,6 +191,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "ask":
         # report 是自然语言 Agent 返回的统一结构化报告。
         report = run_ask(args_dict["root"], args_dict["question"], provider=args_dict.get("provider"))
+        _print_report(report, args_dict["json"])
+        return 0
+
+    # 根据命令类型分发到 PR 审查逻辑。
+    if args.command == "pr-review":
+        report = run_pr_review(
+            args_dict["root"],
+            base=args_dict.get("base"),
+            head=args_dict.get("head"),
+            commit=args_dict.get("commit"),
+            provider=args_dict.get("provider"),
+        )
         _print_report(report, args_dict["json"])
         return 0
 
