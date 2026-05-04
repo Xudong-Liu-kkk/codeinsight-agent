@@ -2,7 +2,7 @@
 
 CodeInsight Agent 是一个基于 LangChain Agent 框架 + uv 的只读代码库分析工具。
 
-`ask` 命令通过 LangChain 的 `create_agent` 让大模型自主决定调用哪些只读工具，每次回答附带**证据链追溯**（可查看每个结论来源于哪个文件）；项目启动后自动建立**长期记忆**，后续问答无需重复扫描。
+`ask` 命令基于 LangGraph 的 **Planner → Executor → Reviewer → Synthesizer** 多步自主分析图：复杂问题自动拆解为子任务、逐一执行、自我验证后再汇总回答。每次回答附带**证据链追溯**，项目启动后自动加载**长期记忆**。
 
 ## 快速开始
 
@@ -209,10 +209,10 @@ V1 已完成“只读代码库分析 Agent”的最小闭环：
 3. 大模型基于真实代码上下文生成中文回答。
 4. 所有底层能力仍保留可单独调用的 CLI 命令，便于调试和脚本化使用。
 
-## 下一步计划（V2）
+## 下一步计划（V3）
 
-V1 已完成七个只读命令闭环，Agent 工具选择已升级为 LangChain 自主调用，证据链追溯和项目长期记忆已落地。剩余方向：
+V2 的 LangGraph 多步自主分析、证据链追溯、项目记忆、diagnose 增强已全部落地。V3 方向：
 
-- **LangGraph 多步自主分析**：用 StateGraph 搭建 Planner → Executor → Reviewer 循环，让 Agent 自我验证、自动推进复杂任务
+- **Git PR 审查**：读取 `git diff`，自动生成 review comments，输出风险等级
 - **支持 `.env` 文件**：自动加载项目目录下的 `.env` 文件，简化环境变量配置
 - **支持更多项目类型**：`requirements.txt`、`Pipfile` 等依赖格式的解析

@@ -6,31 +6,16 @@
 
 from pathlib import Path
 
-from langchain.agents import create_agent
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from codeinsight.agent_tools import _report_to_text, create_tools
 from codeinsight.engine import run_read
+from codeinsight.graph import build_ask_graph
 from codeinsight.llm import LLMConfigError, create_langchain_chat_model
 from codeinsight.memory import ProjectMemory
-from codeinsight.schemas import AnalysisReport, CodeEvidence, Finding
+from codeinsight.schemas import AnalysisReport, Finding
 
 # —— 提示词 ——
-
-AGENT_SYSTEM_PROMPT = (
-    "你是 CodeInsight Agent，一个只读代码库分析助手。"
-    "你可以使用提供的工具来了解和分析代码库。"
-    "分析步骤建议：\n"
-    "1. 先用 overview 了解项目结构\n"
-    "2. 根据问题用 search 搜索相关代码\n"
-    "3. 用 read 查看关键文件的具体内容\n"
-    "4. 如果涉及报错，用 diagnose 解析 traceback\n"
-    "5. 如果询问依赖，用 deps 分析依赖配置\n\n"
-    "回答必须使用中文，结论要可追溯。"
-    "如果信息不足，说明还需要查看哪些文件。"
-    "优先给出：结论、依据、下一步建议。"
-    "不要编造没有在工具结果中出现的信息。"
-)
 
 REVIEW_SYSTEM_PROMPT = (
     "你是 CodeInsight Agent 的只读代码审查助手。"
@@ -95,19 +80,15 @@ def run_ask(root: str, question: str, provider: str | None = None) -> AnalysisRe
             confidence="high",
         )
 
-    # 加载项目长期记忆，注入到 system prompt 中。
+    # 加载项目长期记忆。
     memory = ProjectMemory(root=root_path)
     memory_context = memory.build_context()
-    if memory_context:
-        full_system_prompt = AGENT_SYSTEM_PROMPT + "\n\n" + memory_context
-    else:
-        full_system_prompt = AGENT_SYSTEM_PROMPT
 
     tools, get_evidence = create_tools(str(root_path), memory=memory)
-    agent = create_agent(model=chat_model, tools=tools, system_prompt=full_system_prompt)
+    ask_graph = build_ask_graph(chat_model, tools, memory_context)
 
     try:
-        result = agent.invoke({"messages": [HumanMessage(content=question.strip())]})
+        result = ask_graph.invoke({"messages": [HumanMessage(content=question.strip())]})
     except Exception as exc:
         return AnalysisReport(
             summary=f"ask 调用大模型失败：{exc}",
@@ -123,17 +104,10 @@ def run_ask(root: str, question: str, provider: str | None = None) -> AnalysisRe
             confidence="medium",
         )
 
-    messages = result.get("messages", [])
-    answer = ""
-    for msg in reversed(messages):
-        if isinstance(msg, AIMessage) and msg.content and not getattr(msg, "tool_calls", None):
-            answer = str(msg.content)
-            break
-    if not answer:
-        for msg in reversed(messages):
-            if isinstance(msg, AIMessage) and msg.content:
-                answer = str(msg.content)
-                break
+    answer = result.get("final_answer", "")
+    steps_planned = len(result.get("plan_steps", []))
+    steps_completed = result.get("current_step", 0)
+    iterations = result.get("iteration", 0)
     if not answer:
         answer = "Agent 未生成最终回答，请检查模型服务或尝试换一种问法。"
 
@@ -151,9 +125,14 @@ def run_ask(root: str, question: str, provider: str | None = None) -> AnalysisRe
         summary=answer,
         findings=[
             Finding(
-                title="ask 已完成大模型分析",
+                title="ask 已完成多步自主分析",
                 severity="info",
-                detail=f"Agent 调用了 {tool_count} 种工具，收集了 {len(evidence)} 条证据后生成回答。",
+                detail=(
+                    f"Planner 拆解为 {steps_planned} 个子任务，"
+                    f"Executor 执行了 {steps_completed} 步，"
+                    f"Reviewer 审查了 {iterations} 次，"
+                    f"调用 {tool_count} 种工具、收集 {len(evidence)} 条证据。"
+                ),
                 suggestion="如回答不够具体，可在问题中明确函数名、文件路径或粘贴 traceback。",
             )
         ],
