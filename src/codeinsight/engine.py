@@ -7,7 +7,7 @@
 from pathlib import Path
 
 from codeinsight.schemas import AnalysisReport, CodeEvidence, Finding
-from codeinsight.tools import list_project_tree, load_traceback_source, parse_python_traceback, parse_pyproject_deps, read_file_lines, search_code
+from codeinsight.tools import get_exception_advice, list_project_tree, load_traceback_source, parse_python_traceback, parse_pyproject_deps, read_file_lines, search_code
 
 
 def run_overview(root: str) -> AnalysisReport:
@@ -498,6 +498,18 @@ def run_diagnose(root: str, text: str | None = None, traceback_file: str | None 
             suggestion="优先查看最后一个项目内栈帧附近的源码和调用参数。",
         )
     ]
+
+    # 如果识别到常见异常类型，附加专项排查建议。
+    exception_advice = get_exception_advice(exception_title)
+    if exception_advice:
+        findings.append(
+            Finding(
+                title=f"{exception_title} 专项排查建议",
+                severity="info",
+                detail=exception_advice,
+                suggestion="按步骤逐一排查，通常前两项就能定位根因。",
+            )
+        )
     if skipped_frames:
         findings.append(
             Finding(

@@ -1,8 +1,8 @@
-# CodeInsight Agent（V1 只读 Agent 版）
+# CodeInsight Agent（V1 只读 Agent 版 · LangChain）
 
-CodeInsight Agent 是一个基于 Python、uv 和大模型 Provider 的只读代码库分析 Agent。
+CodeInsight Agent 是一个基于 LangChain Agent 框架 + uv 的只读代码库分析工具。
 
-V1 阶段的核心目标是：通过自然语言 `ask` 入口接入大模型，同时把项目概览、搜索、读取、报错诊断等能力限制在只读安全边界内。当前版本不会修改用户代码，也不会主动执行高风险操作。
+`ask` 命令通过 LangChain 的 `create_agent` 让大模型自主决定调用哪些只读工具，每次回答附带**证据链追溯**（可查看每个结论来源于哪个文件）；项目启动后自动建立**长期记忆**，后续问答无需重复扫描。
 
 ## 快速开始
 
@@ -13,6 +13,8 @@ uv run codeinsight search --root . --query "run_search"
 uv run codeinsight read --root . --path src/codeinsight/engine.py --start 1 --end 40
 uv run codeinsight diagnose --root . --text "RuntimeError: failed"
 uv run codeinsight ask --root . --question "这个项目是做什么的？" --provider ollama
+uv run codeinsight review --root . --path src/codeinsight/agent.py
+uv run codeinsight deps --root .
 uv run pytest
 ```
 
@@ -68,14 +70,15 @@ set CODEINSIGHT_LLM_PROVIDER=ollama
 uv run codeinsight ask --root . --question "这个项目是做什么的？"
 ```
 
-`ask` 是 V1 的 Agent 主入口。它会先通过只读工具自动收集上下文，再把上下文交给大模型生成中文分析回答。
-
-当前 `ask` 会自动使用：
+`ask` 是 V1 的 Agent 主入口，通过 LangChain `create_agent` 让大模型自主决定调用哪些只读工具：
 
 - `overview`：获取项目结构概览
-- `search`：根据问题关键词搜索代码
-- `read`：读取搜索命中的源码上下文
-- `diagnose`：当问题中包含 traceback 或异常文本时辅助诊断
+- `search`：按关键词搜索代码
+- `read`：读取文件内容片段
+- `diagnose`：解析 Python traceback
+- `deps`：分析项目依赖配置
+
+与固定流程不同，模型会根据问题自行判断：先调哪个工具、调几次、是否需要合并多个工具的结果，然后基于真实代码上下文生成中文分析回答。
 
 可以指定 Provider：
 
@@ -133,6 +136,28 @@ uv run codeinsight diagnose --root . --text "ValueError: bad value"
 uv run codeinsight diagnose --root . --traceback-file traceback.txt
 ```
 
+### 代码审查
+
+```bash
+uv run codeinsight review --root . --path src/codeinsight/agent.py
+```
+
+`review` 会对指定文件执行只读代码审查，基于大模型生成包含总体评价、风险点、改进建议的结构化审查报告。
+
+可以指定 Provider 和最大读取行数：
+
+```bash
+uv run codeinsight review --root . --path src/codeinsight/agent.py --provider qwen --max-lines 200
+```
+
+### 依赖分析
+
+```bash
+uv run codeinsight deps --root .
+```
+
+`deps` 会解析 `pyproject.toml` 中的运行时依赖和开发依赖，检测 `uv.lock` 锁文件，并输出依赖统计与风险提示。
+
 ### JSON 输出
 
 所有当前命令都支持 `--json`，便于后续接入脚本或上层系统：
@@ -143,12 +168,17 @@ uv run codeinsight search --root . --query "run_search" --json
 uv run codeinsight read --root . --path src/codeinsight/engine.py --start 1 --end 40 --json
 uv run codeinsight diagnose --root . --text "RuntimeError: failed" --json
 uv run codeinsight ask --root . --question "这个项目是做什么的？" --json
+uv run codeinsight review --root . --path src/codeinsight/agent.py --json
+uv run codeinsight deps --root . --json
 ```
 
 ## 当前范围
 
-- 提供 `ask`、`overview`、`search`、`read`、`diagnose` 五个只读 CLI 命令
-- `ask` 已接入大模型 Provider，并自动组合只读工具上下文生成回答
+- 提供 `ask`、`overview`、`search`、`read`、`diagnose`、`review`、`deps` 七个只读 CLI 命令
+- `ask` 通过 LangChain Agent 让模型自主选择工具，回答附带证据链追溯
+- `review` 已接入大模型，对指定文件执行只读代码审查
+- `deps` 已支持解析 pyproject.toml 依赖配置并检测锁文件
+- 项目长期记忆：文件索引、问答历史持久化到 `.codeinsight/memory/`，后续 ask 自动加载
 - Provider 抽象已兼容 `openai`、`deepseek`、`qwen`、`ollama`
 - `overview` 已接入真实目录扫描与结构证据输出
 - `search` 已接入真实关键词搜索，优先使用 `rg`，不可用时回退到 Python 搜索
@@ -179,9 +209,10 @@ V1 已完成“只读代码库分析 Agent”的最小闭环：
 3. 大模型基于真实代码上下文生成中文回答。
 4. 所有底层能力仍保留可单独调用的 CLI 命令，便于调试和脚本化使用。
 
-## 下一步计划
+## 下一步计划（V2）
 
-- 增强 `diagnose`，针对 `ImportError`、`FileNotFoundError`、`ModuleNotFoundError` 等常见异常给出专门建议
-- 新增 `review` 命令，支持对指定文件做只读代码审查
-- 新增依赖分析能力，识别 `pyproject.toml`、`uv.lock` 等依赖文件中的风险和结构
-- 进一步完善 Agent 工具选择策略，从启发式搜索升级为更明确的工具调用流程
+V1 已完成七个只读命令闭环，Agent 工具选择已升级为 LangChain 自主调用，证据链追溯和项目长期记忆已落地。剩余方向：
+
+- **LangGraph 多步自主分析**：用 StateGraph 搭建 Planner → Executor → Reviewer 循环，让 Agent 自我验证、自动推进复杂任务
+- **支持 `.env` 文件**：自动加载项目目录下的 `.env` 文件，简化环境变量配置
+- **支持更多项目类型**：`requirements.txt`、`Pipfile` 等依赖格式的解析

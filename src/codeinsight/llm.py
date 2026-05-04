@@ -7,8 +7,6 @@
 from dataclasses import dataclass
 import os
 
-from openai import OpenAI
-
 
 # DEFAULT_PROVIDER 为默认 Provider 名称。
 DEFAULT_PROVIDER = "ollama"
@@ -27,7 +25,7 @@ DEFAULT_QWEN_MODEL = "qwen-plus"
 # DEFAULT_OLLAMA_BASE_URL 为本地 Ollama OpenAI 兼容接口地址。
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434/v1"
 # DEFAULT_OLLAMA_MODEL 为 Ollama 默认模型名。
-DEFAULT_OLLAMA_MODEL = "deepseek-r1:latest"
+DEFAULT_OLLAMA_MODEL = "Qwen3:8"
 
 
 @dataclass(slots=True)
@@ -93,30 +91,6 @@ class LLMConfigError(RuntimeError):
     """大模型配置错误。"""
 
 
-class OpenAICompatibleLLMClient:
-    """统一的 OpenAI 兼容聊天客户端。"""
-
-    def __init__(self, config: LLMConfig):
-        """初始化兼容客户端。"""
-
-        # _client 是底层 SDK 客户端。
-        self._client = OpenAI(api_key=config.api_key, base_url=config.base_url)
-        self._model = config.model
-        self._provider = config.provider
-
-    def chat(self, messages: list[dict[str, str]], temperature: float = 0.2) -> str:
-        """发送聊天请求并返回文本回答。"""
-
-        # completion 是兼容接口返回的聊天补全结果。
-        completion = self._client.chat.completions.create(
-            model=self._model,
-            messages=messages,
-            temperature=temperature,
-        )
-        content = completion.choices[0].message.content
-        return content or ""
-
-
 def get_supported_providers() -> list[str]:
     """返回当前支持的 Provider 列表。"""
 
@@ -162,7 +136,18 @@ def load_llm_config(provider: str | None = None) -> LLMConfig:
     return LLMConfig(provider=provider_name, api_key=api_key, model=model, base_url=base_url)
 
 
-def create_llm_client(provider: str | None = None) -> OpenAICompatibleLLMClient:
-    """根据配置创建统一兼容客户端。"""
+def create_langchain_chat_model(provider: str | None = None):
+    """根据配置创建 LangChain ChatOpenAI 实例。
 
-    return OpenAICompatibleLLMClient(load_llm_config(provider=provider))
+    允许 Agent 层通过 LangChain 框架使用统一的 Provider 配置，
+    包括自定义 base_url 和 api_key，兼容 openai / deepseek / qwen / ollama。
+    """
+    from langchain_openai import ChatOpenAI
+
+    config = load_llm_config(provider=provider)
+    return ChatOpenAI(
+        model=config.model,
+        api_key=config.api_key,
+        base_url=config.base_url,
+        temperature=0.2,
+    )

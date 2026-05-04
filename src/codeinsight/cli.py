@@ -33,13 +33,16 @@ def _render_report_text(report: AnalysisReport) -> str:
             lines.append(f"- {rec}")
     if report.evidence:
         lines.append("")
-        lines.append("证据：")
-        # evidence_item 表示一条可追溯证据，用于说明结论来源。
-        for evidence_item in report.evidence[:10]:
+        lines.append("证据链（可追溯每一步分析来源）：")
+        for index, evidence_item in enumerate(report.evidence[:15], start=1):
+            snippet_preview = evidence_item.snippet.strip()[:120]
             lines.append(
-                f"- {evidence_item.file_path}:{evidence_item.start_line}"
-                f" -> {evidence_item.snippet}"
+                f"  {index}. {evidence_item.file_path}:{evidence_item.start_line}"
             )
+            lines.append(f"     原因：{evidence_item.reason}")
+            if snippet_preview:
+                lines.append(f"     内容：{snippet_preview}")
+            lines.append("")
     lines.append("")
     lines.append(f"置信度：{report.confidence}")
     return "\n".join(lines)

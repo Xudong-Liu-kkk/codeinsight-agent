@@ -24,6 +24,9 @@ dist/
 # uv / 本地环境
 .python-version
 
+# CodeInsight Agent 项目记忆
+.codeinsight/
+
 # 编辑器与 IDE 本地状态
 .idea/
 .vscode/
