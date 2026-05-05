@@ -6,6 +6,7 @@ V1 先固定命令协议与输出格式，再逐步增强内部分析能力，
 
 import argparse
 import json
+import sys
 from typing import Any
 
 from codeinsight.agent import run_ask, run_fix, run_pr_review, run_review
@@ -139,6 +140,12 @@ def _build_parser() -> argparse.ArgumentParser:
     fix_parser.add_argument("--provider", required=False, help="可选 Provider。")
     fix_parser.add_argument("--json", action="store_true", help="以 JSON 形式输出报告。")
 
+    # serve_parser 负责"启动 API 服务"命令参数。
+    serve_parser = subparsers.add_parser("serve", help="启动 FastAPI REST 服务。")
+    serve_parser.add_argument("--root", required=True, help="项目根目录。")
+    serve_parser.add_argument("--port", type=int, default=8888, help="监听端口，默认 8888。")
+    serve_parser.add_argument("--host", default="127.0.0.1", help="监听地址，默认 127.0.0.1。")
+
     return parser
 
 
@@ -236,6 +243,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"已清空项目记忆：{memory.memory_dir}")
         else:
             print(f"项目根目录不存在：{root_path}")
+        return 0
+
+    # 根据命令类型分发到 API 服务启动逻辑。
+    if args.command == "serve":
+        from codeinsight.api import create_app
+        import uvicorn
+
+        port = args_dict.get("port", 8000)
+        host = args_dict.get("host", "127.0.0.1")
+        print(f"CodeInsight Agent API 启动：http://{host}:{port}/docs", file=sys.stderr)
+        app = create_app(args_dict["root"])
+        uvicorn.run(app, host=host, port=port, log_level="info")
         return 0
 
     # review 是剩余的合法命令；argparse 已保证不会出现其他命令。
