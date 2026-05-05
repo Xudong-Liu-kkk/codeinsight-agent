@@ -103,62 +103,42 @@ def create_app(root: str) -> FastAPI:
             try:
                 for chunk in ask_graph.stream(
                     {"messages": [HumanMessage(content=question.strip())]},
-                    stream_mode=["messages", "updates"],
-                    subgraphs=True,
+                    stream_mode="updates",
                 ):
-                    # 解析 chunk：subgraphs=True 时为 (ns, mode, data)。
-                    if isinstance(chunk, tuple) and len(chunk) == 3:
-                        ns, mode, data = chunk
-                        if ns != ():
-                            continue
-                    elif isinstance(chunk, tuple) and len(chunk) == 2:
-                        mode, data = chunk
-                    else:
-                        continue
-
-                    if mode == "updates":
-                        for node_name, node_output in data.items():
-                            if node_name == "planner":
-                                steps_count = len(node_output.get("plan_steps", []))
-                                yield _sse_format("plan", {
-                                    "steps": node_output.get("plan_steps", []),
-                                })
-                            elif node_name == "executor":
-                                idx = node_output.get("current_step", 0)
-                                yield _sse_format("step", {
-                                    "current": idx,
-                                    "total": steps_count,
-                                })
-                            elif node_name == "reviewer":
-                                yield _sse_format("review", {
-                                    "sufficient": node_output.get("is_sufficient", "NO") == "YES",
-                                    "iteration": node_output.get("iteration", 0),
-                                })
-                            elif node_name == "synthesizer":
-                                pass  # final 事件在 answer 提取后发送。
-
-                    elif mode == "messages":
-                        ns_data = data
-                        if isinstance(ns_data, tuple) and len(ns_data) == 2:
-                            msg, _meta = ns_data
-                        else:
-                            msg = ns_data
-
-                        content = getattr(msg, "content", None)
-                        tool_call_chunks = getattr(msg, "tool_call_chunks", []) if hasattr(msg, "tool_call_chunks") else []
-
-                        for tc in tool_call_chunks:
-                            tc_name = getattr(tc, "name", None)
-                            if tc_name:
-                                yield _sse_format("tool_call", {"name": tc_name})
-
-                        if content and isinstance(msg, ToolMessage):
-                            yield _sse_format("tool_result", {
-                                "name": getattr(msg, "name", ""),
-                                "summary": str(content)[:200],
+                    for node_name, node_output in chunk.items():
+                        if node_name == "planner":
+                            steps_count = len(node_output.get("plan_steps", []))
+                            yield _sse_format("plan", {
+                                "steps": node_output.get("plan_steps", []),
                             })
-                        elif content:
-                            yield _sse_format("token", {"text": content})
+                        elif node_name == "executor":
+                            idx = node_output.get("current_step", 0)
+                            yield _sse_format("step", {
+                                "current": idx,
+                                "total": steps_count,
+                            })
+                            # Reader Agent 消息通过 state 透传，emit 给前端。
+                            for msg in node_output.get("messages", []):
+                                content = getattr(msg, "content", None)
+                                tc_chunks = getattr(msg, "tool_call_chunks", []) if hasattr(msg, "tool_call_chunks") else []
+                                for tc in tc_chunks:
+                                    tc_name = getattr(tc, "name", None)
+                                    if tc_name:
+                                        yield _sse_format("tool_call", {"name": tc_name})
+                                if content and isinstance(msg, ToolMessage):
+                                    yield _sse_format("tool_result", {
+                                        "name": getattr(msg, "name", ""),
+                                        "summary": str(content)[:200],
+                                    })
+                                elif content:
+                                    yield _sse_format("token", {"text": str(content)})
+                        elif node_name == "reviewer":
+                            yield _sse_format("review", {
+                                "sufficient": node_output.get("is_sufficient", "NO") == "YES",
+                                "iteration": node_output.get("iteration", 0),
+                            })
+                        elif node_name == "synthesizer":
+                            pass
 
                 # 流结束：收集证据和最终回答。
                 evidence = get_evidence()

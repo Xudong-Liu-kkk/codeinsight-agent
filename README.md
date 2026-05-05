@@ -1,8 +1,10 @@
-# CodeInsight Agent（V1 只读 Agent 版 · LangChain）
+# CodeInsight Agent
 
-CodeInsight Agent 是一个基于 LangChain Agent 框架 + uv 的只读代码库分析工具。
+[![Test](https://github.com/your-username/codeinsight-agent/actions/workflows/test.yml/badge.svg)](https://github.com/your-username/codeinsight-agent/actions/workflows/test.yml)
 
-`ask` 命令基于 LangGraph 的 **Planner → Executor → Reviewer → Synthesizer** 多步自主分析图：复杂问题自动拆解为子任务、逐一执行、自我验证后再汇总回答。每次回答附带**证据链追溯**，项目启动后自动加载**长期记忆**。
+基于 LangGraph **多 Agent 协作**的代码库分析工具（CLI + REST API + SSE 流式）。
+
+四个独立 Agent — Planner / Reader / Reviewer / Synthesizer — 各司其职，通过 LangGraph 协作图编排。支持自然语言问答、代码审查、Git PR 审查、自动修复、依赖分析、错误诊断等 11 个命令。每次回答附带**证据链追溯**，项目启动后自动加载**长期记忆**。
 
 ## 快速开始
 
@@ -16,7 +18,8 @@ uv run codeinsight ask --root . --question "这个项目是做什么的？" --pr
 uv run codeinsight review --root . --path src/codeinsight/agent.py
 uv run codeinsight deps --root .
 uv run codeinsight pr-review --root .
-uv run codeinsight fix --root . --issue "第 85 行可能返回 None，需要加空值检查"
+uv run codeinsight fix --root . --issue "第 85 行可能返回 None"
+uv run codeinsight serve --root . --port 8888
 uv run pytest
 ```
 
@@ -72,7 +75,7 @@ set CODEINSIGHT_LLM_PROVIDER=ollama
 uv run codeinsight ask --root . --question "这个项目是做什么的？"
 ```
 
-`ask` 是 V1 的 Agent 主入口，通过 LangChain `create_agent` 让大模型自主决定调用哪些只读工具：
+`ask` 是 Agent 主入口，通过四个独立 Agent 协作分析代码库：
 
 - `overview`：获取项目结构概览
 - `search`：按关键词搜索代码
@@ -197,6 +200,15 @@ uv run codeinsight review --root . --path src/codeinsight/agent.py --symbol run_
 uv run codeinsight memory-clear --root .
 ```
 
+### REST API 服务
+
+```bash
+uv run codeinsight serve --root . --port 8888
+# 打开 http://127.0.0.1:8888/docs 查看 Swagger 文档
+```
+
+`serve` 启动 FastAPI 服务，暴露 10 个 REST 端点。其中 `/ask/stream` 通过 SSE 实时推送 Agent 分析过程。
+
 ### JSON 输出
 
 所有当前命令都支持 `--json`，便于后续接入脚本或上层系统：
@@ -213,23 +225,17 @@ uv run codeinsight deps --root . --json
 
 ## 当前范围
 
-- 提供 `ask`、`overview`、`search`、`read`、`diagnose`、`review`、`deps`、`pr-review`、`fix`、`memory-clear` 十个 CLI 命令
-- `ask` 通过 LangGraph 多步自主分析图（Planner → Executor → Reviewer → Synthesizer）执行，附带证据链追溯 + 逐 token 流式输出
-- `review` 已接入大模型，对指定文件或符号执行只读代码审查（`--symbol` 聚焦函数/类）
-- `pr-review` 读取 git diff，生成结构化 PR 审查报告（支持 commit 和分支对比）
-- `fix` 根据 issue 描述搜索、生成修复方案，用户确认后自动应用并创建备份
-- `deps` 已支持解析 pyproject.toml 依赖配置并检测锁文件
+- 提供 `ask`、`overview`、`search`、`read`、`diagnose`、`review`、`deps`、`pr-review`、`fix`、`serve`、`memory-clear` 十一个 CLI 命令
+- 多 Agent 协作：Planner / Reader / Reviewer / Synthesizer 四个独立 Agent，各有专属 prompt 和工具集
+- `ask` 附带证据链追溯 + CLI 逐 token 流式输出 + SSE 流式 API
+- `serve` 启动 FastAPI 服务，10 个 REST 端点 + Swagger 文档
+- `review` 支持 `--symbol` 聚焦审查函数/类
+- `pr-review` 支持 commit、分支对比、工作区变更三种模式
+- `fix` 自动搜索 → 生成修复 → 展示 diff → 确认 → 应用 → 跑测试 → 失败回滚
 - `diagnose` 覆盖 10 种常见 Python 异常的专项排查建议
-- 项目长期记忆：文件索引、问答历史持久化到 `.codeinsight/memory/`，后续 ask 自动加载
-- `.env` 自动加载：支持从项目目录加载环境变量，无需手动 set
-- Provider 抽象已兼容 `openai`、`deepseek`、`qwen`、`ollama`
-- `overview` 已接入真实目录扫描与结构证据输出
-- `search` 已接入真实关键词搜索，优先使用 `rg`，不可用时回退到 Python 搜索
-- `read` 已支持按行读取项目内安全文件片段
-- `diagnose` 已支持解析 Python traceback，并读取项目内相关代码上下文
-- 提供路径安全保护，默认禁止读取项目根目录外路径和常见敏感文件
-- 提供统一报告数据结构，便于 CLI、工具层和 Agent 层协作
-- 提供工具层、Provider 层和 Agent 编排层测试，保证迭代过程稳定
+- 项目长期记忆：文件索引、问答历史持久化到 `.codeinsight/memory/`
+- `.env` 自动加载 + 多 Provider 兼容（openai / deepseek / qwen / ollama）
+- CI：GitHub Actions 自动测试，104 个测试用例
 
 ## 开发约定
 
@@ -243,19 +249,19 @@ uv run codeinsight deps --root . --json
   - `.venv/`
   - `*.egg-info/`
 
-## V1 完成状态
+## 版本历程
 
-V1 已完成“只读代码库分析 Agent”的最小闭环：
+| 版本 | 内容 |
+|---|---|
+| V1 | 只读 CLI（overview / search / read / diagnose / ask / review / deps） |
+| V2 | LangGraph 多步分析 + 证据链追溯 + 项目长期记忆 + diagnose 增强 |
+| V3 | Git PR 审查 + .env 自动加载 + 搜索过滤优化 |
+| V4 | fix 自动修复（搜索→生成→确认→应用→测试→回滚） |
+| V5 | 多 Agent 协作（Planner / Reader / Reviewer / Synthesizer 子 Agent） |
+| API | FastAPI REST + SSE 流式接口 |
 
-1. 用户通过 `ask` 输入自然语言问题。
-2. Agent 自动调用只读工具收集项目上下文。
-3. 大模型基于真实代码上下文生成中文回答。
-4. 所有底层能力仍保留可单独调用的 CLI 命令，便于调试和脚本化使用。
+## 下一步计划
 
-## 下一步计划（V4）
-
-V3 的 Git PR 审查、.env 加载、流式输出已全部落地。V4 方向：
-
-- **增强 fix 命令**：支持多文件联动修复、自动运行测试验证修复结果
-- **V5 多 Agent 协作**：Planner / Reader / Reviewer / Fixer 独立 Agent，各司其职
-- **支持更多项目类型**：`requirements.txt`、`Pipfile` 等依赖格式的解析
+- **Docker 容器化**：`docker compose up` 一键部署
+- **测试覆盖率报告**：pytest --cov 量化测试覆盖
+- **支持更多项目类型**：`requirements.txt`、`Pipfile` 等依赖格式

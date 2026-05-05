@@ -21,6 +21,7 @@
 from dataclasses import dataclass, field
 import json
 import os
+import time
 from pathlib import Path
 
 
@@ -192,11 +193,7 @@ class ProjectMemory:
         items.append({
             "question": question,
             "summary": summary[:300],
-            "timestamp": (
-                int(os.stat(self.memory_dir).st_mtime * 1000)
-                if self.memory_dir.exists()
-                else 0
-            ),
+            "timestamp": int(time.time() * 1000),
         })
         # 截断到 MAX_HISTORY 条，保留最新的。
         items = items[-MAX_HISTORY:]

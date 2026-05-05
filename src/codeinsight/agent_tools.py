@@ -38,6 +38,33 @@ def _report_to_text(report: AnalysisReport) -> str:
     return "\n".join(lines)
 
 
+def _save_imports_to_memory(memory: ProjectMemory, file_path: str, source: str) -> None:
+    """从 Python 源码中解析 import 语句，存入项目记忆。
+
+    支持 `import xxx` 和 `from xxx import yyy` 两种语法，
+    使用 ast 解析，失败时静默跳过（不影响主流程）。
+    """
+    import ast
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return
+
+    imported: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imported.append(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                imported.append(node.module)
+    if imported:
+        try:
+            memory.save_imports({file_path: imported})
+        except OSError:
+            pass
+
+
 def create_tools(root: str, memory: ProjectMemory | None = None) -> tuple[list, Callable[[], list[CodeEvidence]]]:
     """创建绑定到指定项目根目录的工具列表和证据收集器。
 
@@ -48,6 +75,17 @@ def create_tools(root: str, memory: ProjectMemory | None = None) -> tuple[list, 
     持久化到 .codeinsight/memory/ 目录。
     """
     evidence_registry: list[CodeEvidence] = []
+    _seen_evidence: set[tuple[str, int, int]] = set()
+
+    def _add_evidence(tool_label: str, report: AnalysisReport) -> None:
+        """将报告证据标记来源后加入注册表，按 (文件, 起行, 止行) 去重。"""
+        for ev in report.evidence:
+            key = (ev.file_path, ev.start_line, ev.end_line)
+            if key in _seen_evidence:
+                continue
+            _seen_evidence.add(key)
+            ev.reason = f"[Agent 调用 {tool_label}] {ev.reason}"
+            evidence_registry.append(ev)
 
     @tool
     def overview(query: str = "") -> str:
@@ -55,9 +93,7 @@ def create_tools(root: str, memory: ProjectMemory | None = None) -> tuple[list, 
         在分析新项目时通常应首先调用此工具，了解项目包含哪些模块和文件。
         """
         report = run_overview(root)
-        for ev in report.evidence:
-            ev.reason = f"[Agent 调用 overview] {ev.reason}"
-            evidence_registry.append(ev)
+        _add_evidence("overview", report)
         if memory is not None:
             try:
                 scanned = memory.scan_and_save()
@@ -73,9 +109,7 @@ def create_tools(root: str, memory: ProjectMemory | None = None) -> tuple[list, 
         参数 query 为搜索关键词或符号名称，例如函数名、类名、异常名等。
         """
         report = run_search(root, query)
-        for ev in report.evidence:
-            ev.reason = f"[Agent 调用 search('{query}')] {ev.reason}"
-            evidence_registry.append(ev)
+        _add_evidence(f"search('{query}')", report)
         return _report_to_text(report)
 
     @tool
@@ -90,9 +124,10 @@ def create_tools(root: str, memory: ProjectMemory | None = None) -> tuple[list, 
         每次最多返回 200 行。
         """
         report = run_read(root, file_path, start_line=start_line, end_line=end_line, max_lines=200)
-        for ev in report.evidence:
-            ev.reason = f"[Agent 调用 read('{file_path}')] {ev.reason}"
-            evidence_registry.append(ev)
+        _add_evidence(f"read('{file_path}')", report)
+        # 解析 Python 文件的 import 关系，写入项目长期记忆。
+        if memory is not None and file_path.endswith(".py") and report.evidence:
+            _save_imports_to_memory(memory, file_path, report.evidence[0].snippet)
         return _report_to_text(report)
 
     @tool
@@ -101,9 +136,7 @@ def create_tools(root: str, memory: ProjectMemory | None = None) -> tuple[list, 
         error_text 应为包含 traceback 或异常信息的完整文本。
         """
         report = run_diagnose(root, text=error_text)
-        for ev in report.evidence:
-            ev.reason = f"[Agent 调用 diagnose] {ev.reason}"
-            evidence_registry.append(ev)
+        _add_evidence("diagnose", report)
         return _report_to_text(report)
 
     @tool
@@ -112,9 +145,7 @@ def create_tools(root: str, memory: ProjectMemory | None = None) -> tuple[list, 
         当用户询问项目使用了哪些库、依赖关系或包管理时使用。
         """
         report = run_deps(root)
-        for ev in report.evidence:
-            ev.reason = f"[Agent 调用 deps] {ev.reason}"
-            evidence_registry.append(ev)
+        _add_evidence("deps", report)
         return _report_to_text(report)
 
     def get_evidence() -> list[CodeEvidence]:

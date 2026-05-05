@@ -200,7 +200,8 @@ def build_ask_graph(chat_model, tools, memory_context: str = ""):
 
         findings = list(state.get("findings", []))
         findings.append(f"[步骤 {idx + 1}] {step_desc}\n{answer}")
-        return {"findings": findings, "current_step": idx + 1}
+        # 将 Reader Agent 的消息透传到父 state，供 SSE / API 捕获。
+        return {"findings": findings, "current_step": idx + 1, "messages": final_messages}
 
     def _reviewer(state: AskState) -> dict:
         all_findings = "\n\n".join(state.get("findings", []))
