@@ -8,7 +8,7 @@ import argparse
 import json
 from typing import Any
 
-from codeinsight.agent import run_ask, run_pr_review, run_review
+from codeinsight.agent import run_ask, run_fix, run_pr_review, run_review
 from codeinsight.engine import run_deps, run_diagnose, run_overview, run_read, run_search
 from codeinsight.llm import load_env_from_dir
 from codeinsight.memory import ProjectMemory
@@ -132,6 +132,13 @@ def _build_parser() -> argparse.ArgumentParser:
     mem_clear_parser = subparsers.add_parser("memory-clear", help="清空项目长期记忆。")
     mem_clear_parser.add_argument("--root", required=True, help="项目根目录。")
 
+    # fix_parser 负责"自动修复"命令参数。
+    fix_parser = subparsers.add_parser("fix", help="根据 issue 描述自动修复代码。")
+    fix_parser.add_argument("--root", required=True, help="项目根目录。")
+    fix_parser.add_argument("--issue", required=True, help="要修复的问题描述。")
+    fix_parser.add_argument("--provider", required=False, help="可选 Provider。")
+    fix_parser.add_argument("--json", action="store_true", help="以 JSON 形式输出报告。")
+
     return parser
 
 
@@ -209,6 +216,12 @@ def main(argv: list[str] | None = None) -> int:
             commit=args_dict.get("commit"),
             provider=args_dict.get("provider"),
         )
+        _print_report(report, args_dict["json"])
+        return 0
+
+    # 根据命令类型分发到自动修复逻辑。
+    if args.command == "fix":
+        report = run_fix(args_dict["root"], args_dict["issue"], provider=args_dict.get("provider"))
         _print_report(report, args_dict["json"])
         return 0
 

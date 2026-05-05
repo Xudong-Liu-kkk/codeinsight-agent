@@ -15,6 +15,8 @@ uv run codeinsight diagnose --root . --text "RuntimeError: failed"
 uv run codeinsight ask --root . --question "这个项目是做什么的？" --provider ollama
 uv run codeinsight review --root . --path src/codeinsight/agent.py
 uv run codeinsight deps --root .
+uv run codeinsight pr-review --root .
+uv run codeinsight fix --root . --issue "第 85 行可能返回 None，需要加空值检查"
 uv run pytest
 ```
 
@@ -158,6 +160,43 @@ uv run codeinsight deps --root .
 
 `deps` 会解析 `pyproject.toml` 中的运行时依赖和开发依赖，检测 `uv.lock` 锁文件，并输出依赖统计与风险提示。
 
+### Git PR 审查
+
+```bash
+uv run codeinsight pr-review --root .
+```
+
+`pr-review` 读取当前未提交的 git diff，结合文件内容交给大模型生成结构化审查报告（变更概要、风险评估、逐文件 Review）。
+
+也支持审查指定 commit 或分支对比：
+
+```bash
+uv run codeinsight pr-review --root . --commit HEAD
+uv run codeinsight pr-review --root . --base main --head feature-x
+```
+
+### 自动修复
+
+```bash
+uv run codeinsight fix --root . --issue "第 85 行可能返回 None，需要加空值检查"
+```
+
+`fix` 根据 issue 描述搜索相关代码、读取文件、让大模型生成精确修复方案，展示 diff 后由用户确认并应用。修改前自动创建 `.bak` 备份文件。
+
+### 聚焦审查指定函数
+
+```bash
+uv run codeinsight review --root . --path src/codeinsight/agent.py --symbol run_ask
+```
+
+`--symbol` 用 ast 精确定位函数/类源码，只审查该符号而非整个文件。
+
+### 清空项目记忆
+
+```bash
+uv run codeinsight memory-clear --root .
+```
+
 ### JSON 输出
 
 所有当前命令都支持 `--json`，便于后续接入脚本或上层系统：
@@ -174,11 +213,15 @@ uv run codeinsight deps --root . --json
 
 ## 当前范围
 
-- 提供 `ask`、`overview`、`search`、`read`、`diagnose`、`review`、`deps` 七个只读 CLI 命令
-- `ask` 通过 LangChain Agent 让模型自主选择工具，回答附带证据链追溯
-- `review` 已接入大模型，对指定文件执行只读代码审查
+- 提供 `ask`、`overview`、`search`、`read`、`diagnose`、`review`、`deps`、`pr-review`、`fix`、`memory-clear` 十个 CLI 命令
+- `ask` 通过 LangGraph 多步自主分析图（Planner → Executor → Reviewer → Synthesizer）执行，附带证据链追溯 + 逐 token 流式输出
+- `review` 已接入大模型，对指定文件或符号执行只读代码审查（`--symbol` 聚焦函数/类）
+- `pr-review` 读取 git diff，生成结构化 PR 审查报告（支持 commit 和分支对比）
+- `fix` 根据 issue 描述搜索、生成修复方案，用户确认后自动应用并创建备份
 - `deps` 已支持解析 pyproject.toml 依赖配置并检测锁文件
+- `diagnose` 覆盖 10 种常见 Python 异常的专项排查建议
 - 项目长期记忆：文件索引、问答历史持久化到 `.codeinsight/memory/`，后续 ask 自动加载
+- `.env` 自动加载：支持从项目目录加载环境变量，无需手动 set
 - Provider 抽象已兼容 `openai`、`deepseek`、`qwen`、`ollama`
 - `overview` 已接入真实目录扫描与结构证据输出
 - `search` 已接入真实关键词搜索，优先使用 `rg`，不可用时回退到 Python 搜索
@@ -209,10 +252,10 @@ V1 已完成“只读代码库分析 Agent”的最小闭环：
 3. 大模型基于真实代码上下文生成中文回答。
 4. 所有底层能力仍保留可单独调用的 CLI 命令，便于调试和脚本化使用。
 
-## 下一步计划（V3）
+## 下一步计划（V4）
 
-V2 的 LangGraph 多步自主分析、证据链追溯、项目记忆、diagnose 增强已全部落地。V3 方向：
+V3 的 Git PR 审查、.env 加载、流式输出已全部落地。V4 方向：
 
-- **Git PR 审查**：读取 `git diff`，自动生成 review comments，输出风险等级
-- **支持 `.env` 文件**：自动加载项目目录下的 `.env` 文件，简化环境变量配置
+- **增强 fix 命令**：支持多文件联动修复、自动运行测试验证修复结果
+- **V5 多 Agent 协作**：Planner / Reader / Reviewer / Fixer 独立 Agent，各司其职
 - **支持更多项目类型**：`requirements.txt`、`Pipfile` 等依赖格式的解析

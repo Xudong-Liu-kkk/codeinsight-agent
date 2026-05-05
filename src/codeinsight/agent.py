@@ -17,7 +17,8 @@ import sys
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from codeinsight.agent_tools import _report_to_text, create_tools
-from codeinsight.engine import run_read
+from codeinsight.engine import run_read, run_search
+from codeinsight.fix_tool import apply_fix, generate_diff
 from codeinsight.git_tool import get_branch_diff, get_commit_diff, get_uncommitted_diff
 from codeinsight.tools.symbol_tool import find_symbol_source
 from codeinsight.graph import build_ask_graph
@@ -517,4 +518,230 @@ def run_pr_review(
             "确认变更不会破坏现有 CI 流程。",
         ],
         confidence="medium",
+    )
+
+
+# —— fix 命令 ——
+# 自动修复：搜索 → 读取 → 生成 fix → 用户确认 → 应用。
+
+FIX_SYSTEM_PROMPT = (
+    "你是 CodeInsight Agent 的代码修复助手。"
+    "基于用户描述的 issue 和相关代码，生成精确的修复方案。"
+    "只输出修复方案，格式如下：\n\n"
+    "=== FIX ===\n"
+    "文件：<文件路径>\n"
+    "=== ORIGINAL ===\n"
+    "<要替换的原始代码（必须与文件内容精确匹配）>\n"
+    "=== REPLACEMENT ===\n"
+    "<替换后的新代码>\n"
+    "=== END ===\n\n"
+    "要求：\n"
+    "1. ORIGINAL 代码片段必须与源文件逐字符匹配\n"
+    "2. REPLACEMENT 是修复后的完整代码\n"
+    "3. 一次只修复一个问题，涉及多处修改时分别列\n"
+    "4. 如果不需要改代码（如配置问题），输出 === NONE ==="
+)
+
+
+def run_fix(
+    root: str,
+    issue: str,
+    provider: str | None = None,
+    auto_confirm: bool = False,
+) -> AnalysisReport:
+    """根据 issue 描述自动修复代码。
+
+    工作流：
+      1. 用 search 定位 issue 相关的代码文件
+      2. 用 read 读取候选文件内容
+      3. 让 LLM 生成精确修复方案
+      4. 展示 diff，等待用户确认
+      5. 用户确认后应用修复，自动创建 .bak 备份
+
+    Args:
+        root: 项目根目录。
+        issue: 问题描述，如"第 85 行可能返回 None，需要加空值检查"。
+        provider: 可选的 LLM Provider。
+        auto_confirm: True 时跳过确认步骤（测试用）。
+    """
+    load_env_from_dir(root)
+    root_path = Path(root).resolve()
+    if not root_path.exists() or not root_path.is_dir():
+        return AnalysisReport(
+            summary=f"fix 失败：项目根目录不存在：{root_path}",
+            findings=[Finding(title="根目录路径无效", severity="high",
+                               detail="无法解析你提供的项目根目录路径。",
+                               suggestion="请通过 --root 传入一个真实存在的目录。")],
+            recommendations=["检查路径后重新执行命令。"], confidence="high",
+        )
+    if not issue.strip():
+        return AnalysisReport(
+            summary="fix 失败：issue 为空。",
+            findings=[Finding(title="问题描述为空", severity="medium",
+                               detail="fix 命令要求 --issue 必须是非空字符串。",
+                               suggestion="请描述需要修复的问题。")],
+            recommendations=[], confidence="high",
+        )
+
+    # —— 第一步：搜索相关代码 ——
+    import re as _re
+    terms = _re.findall(r"[A-Za-z_][\w\.]{2,}", issue)
+    candidate_files: set = set()
+    for term in terms[:3]:
+        if len(term) < 3:
+            continue
+        try:
+            search_report = run_search(str(root_path), term)
+            for ev in search_report.evidence[:5]:
+                candidate_files.add(ev.file_path)
+        except Exception:
+            continue
+
+    if not candidate_files:
+        return AnalysisReport(
+            summary="fix 失败：未能搜索到与 issue 相关的代码文件。",
+            findings=[Finding(title="未找到相关代码", severity="medium",
+                               detail="请尝试更具体的问题描述，包含文件名、函数名或行号。",
+                               suggestion="示例：`fix --issue \"engine.py 第 85 行返回值可能为 None\"`")],
+            recommendations=["先用 search 命令确认关键词能命中目标文件。"],
+            confidence="medium",
+        )
+
+    # —— 第二步：读取候选文件 ——
+    file_snippets: list[str] = []
+    for f in sorted(candidate_files)[:5]:
+        try:
+            read_report = run_read(str(root_path), f, start_line=1, end_line=None, max_lines=300)
+            if read_report.evidence:
+                file_snippets.append(f"=== {f} ===\n{read_report.evidence[0].snippet}")
+        except Exception:
+            continue
+
+    # —— 第三步：生成修复方案 ——
+    try:
+        chat_model = create_langchain_chat_model(provider=provider)
+    except LLMConfigError as exc:
+        return AnalysisReport(
+            summary=f"fix 失败：{exc}",
+            findings=[Finding(title="大模型配置无效", severity="high", detail=str(exc),
+                               suggestion="请配置 CODEINSIGHT_LLM_PROVIDER 及对应 API Key。")],
+            confidence="high",
+        )
+
+    fix_prompt = (
+        f"用户 Issue：{issue.strip()}\n\n"
+        "相关代码文件：\n\n"
+        f"{'\n\n'.join(file_snippets)}"
+    )
+    try:
+        response = chat_model.invoke([
+            SystemMessage(content=FIX_SYSTEM_PROMPT),
+            HumanMessage(content=fix_prompt),
+        ])
+        reply = str(response.content or "")
+    except Exception as exc:
+        return AnalysisReport(
+            summary=f"fix 调用大模型失败：{exc}",
+            findings=[Finding(title="大模型调用失败", severity="high", detail=str(exc),
+                               suggestion="检查网络和 API Key。")],
+            confidence="medium",
+        )
+
+    if "=== NONE ===" in reply:
+        return AnalysisReport(
+            summary="fix 分析完成：模型判断此问题不需要修改代码。",
+            findings=[Finding(title="无需代码修改", severity="info",
+                               detail="模型分析后认为该 issue 不涉及代码变更。")],
+            confidence="medium",
+        )
+
+    # —— 第四步：解析修复方案 ——
+    fix_pattern = _re.compile(
+        r"=== FIX ===\s*\n文件：(.+?)\n=== ORIGINAL ===\s*\n(.*?)\n=== REPLACEMENT ===\s*\n(.*?)\n=== END ===",
+        _re.DOTALL,
+    )
+    matches = fix_pattern.findall(reply)
+    if not matches:
+        return AnalysisReport(
+            summary=f"fix 分析完成，但未生成可执行的修复方案。模型回复：\n\n{reply[:500]}",
+            findings=[Finding(title="修复方案解析失败", severity="medium",
+                               detail="模型未按预期格式返回修复方案。")],
+            confidence="low",
+        )
+
+    # —— 第五步：展示 diff 并确认 ——
+    for file_path, original, replacement in matches:
+        fp, orig, repl = file_path.strip(), original.strip(), replacement.strip()
+        if not orig or not repl:
+            continue
+        diff_preview = generate_diff(fp, orig, repl)
+        print(f"\n--- 修复 {fp} ---", file=sys.stderr)
+        print(diff_preview, file=sys.stderr)
+
+    if not auto_confirm:
+        try:
+            choice = input("\n应用以上修复？[y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            choice = "n"
+        if choice not in ("y", "yes"):
+            return AnalysisReport(
+                summary="用户取消了修复操作。",
+                findings=[Finding(title="修复已取消", severity="info",
+                                   detail="用户可以修改 issue 描述后重试。")],
+                confidence="medium",
+            )
+
+    # —— 第六步：应用修复 ——
+    applied, failed = [], []
+    for file_path, original, replacement in matches:
+        fp = file_path.strip()
+        success = apply_fix(fp, original.strip(), replacement.strip())
+        (applied if success else failed).append(fp)
+
+    if not applied:
+        return AnalysisReport(
+            summary="fix 失败：未能应用任何修复。",
+            findings=[Finding(title="修复应用失败", severity="high",
+                               detail="文件内容可能已变更，导致原始代码片段匹配失败。")],
+            confidence="low",
+        )
+
+    # —— 第七步：运行测试验证修复 ——
+    from codeinsight.fix_tool import rollback as do_rollback, run_tests
+
+    print("\n正在运行测试验证修复...", file=sys.stderr)
+    passed, test_output = run_tests(str(root_path))
+    if passed:
+        return AnalysisReport(
+            summary=(
+                f"fix 已应用并通过测试：修改了 {len(applied)} 个文件"
+                f"（{', '.join(applied)}）。原文件已备份为 .bak。"
+            ),
+            findings=[Finding(title="修复成功并通过测试", severity="info",
+                               detail=f"成功修复 {len(applied)} 个文件，pytest 全部通过。",
+                               suggestion="确认无误后可删除 .bak 备份文件。")],
+            recommendations=["修复已验证，可安全提交。"],
+            confidence="high",
+        )
+
+    # —— 测试失败，自动回滚 ——
+    print(f"\n测试失败，自动回滚...\n{test_output[-500:]}", file=sys.stderr)
+    rolled_back = []
+    for fp in applied:
+        success = do_rollback(fp)
+        if success:
+            rolled_back.append(fp)
+
+    return AnalysisReport(
+        summary=(
+            f"修复已回滚：测试失败，已自动恢复 {len(rolled_back)} 个文件"
+            f"（{', '.join(rolled_back)}）。"
+        ),
+        findings=[
+            Finding(title="测试失败，已自动回滚", severity="high",
+                     detail=f"修复后测试未通过，已从 .bak 恢复。pytest 输出：\n{test_output[-300:]}",
+                     suggestion="请修改 issue 描述后重试，或手动修复。"),
+        ],
+        recommendations=["检查测试失败原因，调整 issue 描述后重新 fix。"],
+        confidence="high",
     )
