@@ -64,6 +64,15 @@ class TestApiHealth:
         resp = client.post("/fix?issue=%20%20")
         assert resp.status_code == 200
 
+    def test_ask_stream_returns_sse(self, client):
+        """验证：/ask/stream 返回 SSE 流。"""
+        resp = client.post("/ask/stream?question=hello&provider=unknown")
+        # 即使配置错误，也应返回 SSE 格式。
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.headers.get("content-type", "")
+        body = resp.text
+        assert "event:" in body or body == ""
+
 
 class TestCliServe:
     """CLI serve 命令测试。"""

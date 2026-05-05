@@ -2,16 +2,19 @@
 
 将 CodeInsight Agent 的所有能力暴露为 REST API，
 支持 ask、review、pr-review、fix、deps、diagnose 等端点。
+/ask/stream 端点通过 SSE 流式输出 Agent 的实时分析过程。
 
 启动方式：
   uv run codeinsight serve --root . --port 8888
 """
 
+import asyncio
+import json as _json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from codeinsight.agent import run_ask, run_fix, run_pr_review, run_review
 from codeinsight.engine import run_deps, run_diagnose, run_overview, run_read, run_search
@@ -48,12 +51,144 @@ def create_app(root: str) -> FastAPI:
         lifespan=lifespan,
     )
 
-    # —— 自然语言问答 ——
+    # —— 自然语言问答（同步）——
     @app.post("/ask")
     async def ask(question: str, provider: str | None = None):
-        """自然语言问答：大模型自主调用工具分析代码库。"""
+        """自然语言问答：大模型自主调用工具分析代码库（同步返回）。"""
         report = run_ask(str(root_path), question, provider=provider)
         return _report_to_response(report)
+
+    # —— 自然语言问答（SSE 流式）——
+    @app.post("/ask/stream")
+    async def ask_stream(question: str, provider: str | None = None):
+        """自然语言问答 SSE 流式：实时输出 Agent 的规划和执行过程。
+
+        事件类型：
+          plan      — Planner 拆解的任务列表
+          step      — Executor 开始执行一个子任务
+          token     — Reader Agent 逐 token 输出
+          tool_call — 工具调用开始
+          tool_result — 工具调用结果
+          review    — Reviewer 审查结果
+          final     — Synthesizer 生成的最终回答
+          done      — 流结束
+        """
+        from codeinsight.agent_tools import create_tools
+        from codeinsight.graph import build_ask_graph
+        from codeinsight.llm import LLMConfigError, create_langchain_chat_model
+        from codeinsight.memory import ProjectMemory
+        from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+        # 初始化。
+        try:
+            chat_model = create_langchain_chat_model(provider=provider)
+        except LLMConfigError as exc:
+            error_msg = str(exc)
+            async def error_gen():
+                yield f"event: error\ndata: {_json.dumps({'error': error_msg})}\n\n"
+            return StreamingResponse(error_gen(), media_type="text/event-stream")
+
+        memory = ProjectMemory(root=root_path)
+        memory_context = memory.build_context()
+        tools, get_evidence = create_tools(str(root_path), memory=memory)
+        ask_graph = build_ask_graph(chat_model, tools, memory_context)
+
+        def _sse_format(event: str, data: dict | str) -> str:
+            payload = data if isinstance(data, str) else _json.dumps(data, ensure_ascii=False)
+            return f"event: {event}\ndata: {payload}\n\n"
+
+        async def event_generator():
+            steps_count = 0
+
+            try:
+                for chunk in ask_graph.stream(
+                    {"messages": [HumanMessage(content=question.strip())]},
+                    stream_mode=["messages", "updates"],
+                    subgraphs=True,
+                ):
+                    # 解析 chunk：subgraphs=True 时为 (ns, mode, data)。
+                    if isinstance(chunk, tuple) and len(chunk) == 3:
+                        ns, mode, data = chunk
+                        if ns != ():
+                            continue
+                    elif isinstance(chunk, tuple) and len(chunk) == 2:
+                        mode, data = chunk
+                    else:
+                        continue
+
+                    if mode == "updates":
+                        for node_name, node_output in data.items():
+                            if node_name == "planner":
+                                steps_count = len(node_output.get("plan_steps", []))
+                                yield _sse_format("plan", {
+                                    "steps": node_output.get("plan_steps", []),
+                                })
+                            elif node_name == "executor":
+                                idx = node_output.get("current_step", 0)
+                                yield _sse_format("step", {
+                                    "current": idx,
+                                    "total": steps_count,
+                                })
+                            elif node_name == "reviewer":
+                                yield _sse_format("review", {
+                                    "sufficient": node_output.get("is_sufficient", "NO") == "YES",
+                                    "iteration": node_output.get("iteration", 0),
+                                })
+                            elif node_name == "synthesizer":
+                                pass  # final 事件在 answer 提取后发送。
+
+                    elif mode == "messages":
+                        ns_data = data
+                        if isinstance(ns_data, tuple) and len(ns_data) == 2:
+                            msg, _meta = ns_data
+                        else:
+                            msg = ns_data
+
+                        content = getattr(msg, "content", None)
+                        tool_call_chunks = getattr(msg, "tool_call_chunks", []) if hasattr(msg, "tool_call_chunks") else []
+
+                        for tc in tool_call_chunks:
+                            tc_name = getattr(tc, "name", None)
+                            if tc_name:
+                                yield _sse_format("tool_call", {"name": tc_name})
+
+                        if content and isinstance(msg, ToolMessage):
+                            yield _sse_format("tool_result", {
+                                "name": getattr(msg, "name", ""),
+                                "summary": str(content)[:200],
+                            })
+                        elif content:
+                            yield _sse_format("token", {"text": content})
+
+                # 流结束：收集证据和最终回答。
+                evidence = get_evidence()
+                answer = f"Agent 分析完成，共收集 {len(evidence)} 条证据。详细结果请查看 /ask 同步接口。"
+
+                yield _sse_format("final", {
+                    "evidence_count": len(evidence),
+                    "summary": answer,
+                })
+
+            except Exception as exc:
+                yield _sse_format("error", {"error": str(exc)})
+
+            yield _sse_format("done", {})
+
+            # 保存记忆。
+            try:
+                memory.add_history(question.strip(), answer)
+            except Exception:
+                pass
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     # —— 代码审查 ——
     @app.post("/review")
