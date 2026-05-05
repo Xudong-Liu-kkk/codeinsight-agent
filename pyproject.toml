@@ -21,12 +21,22 @@ codeinsight = "codeinsight.cli:main"
 # 将测试工具放在 dev 组，保持运行时依赖最小化。
 dev = [
     "pytest>=8.3.0",
+    "pytest-cov>=5.0",
 ]
 
 [tool.pytest.ini_options]
 # 使用简洁的 pytest 输出，便于早期迭代时快速查看结果。
 addopts = "-q"
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["src/codeinsight"]
+
+[tool.coverage.report]
+exclude_also = [
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
 
 [tool.uv]
 # 将当前项目按可打包项目处理，确保安装 project.scripts 入口命令。

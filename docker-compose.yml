@@ -1,0 +1,12 @@
+services:
+  codeinsight:
+    build: .
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./.codeinsight:/app/.codeinsight
+    environment:
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
+      - LANGFUSE_HOST=${LANGFUSE_HOST:-https://cloud.langfuse.com}
