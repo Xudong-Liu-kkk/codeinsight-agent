@@ -105,3 +105,28 @@ def test_save_imports(tmp_path):
     imports = memory.load_imports()
     assert imports["agent.py"] == ["engine.py", "llm.py"]
     assert len(imports) == 2
+
+
+def test_clear_removes_all_files(tmp_path):
+    """验证：clear() 清空记忆目录下所有文件。"""
+    memory = ProjectMemory(root=tmp_path)
+    memory.save_file_index([FileEntry(path="a.py", mtime=1)])
+    memory.add_history("问", "答")
+    assert memory.memory_dir.exists()
+    memory.clear()
+    # 目录应为空或不存在。
+    assert not memory.memory_dir.exists() or not list(memory.memory_dir.iterdir())
+
+
+def test_clear_on_empty_memory(tmp_path):
+    """验证：空记忆上调用 clear 不会报错。"""
+    memory = ProjectMemory(root=tmp_path)
+    memory.clear()  # 不应抛出异常。
+
+
+def test_build_parser_supports_memory_clear():
+    """验证：CLI 已注册 memory-clear 子命令。"""
+    from codeinsight.cli import _build_parser
+    parser = _build_parser()
+    args = parser.parse_args(["memory-clear", "--root", "."])
+    assert args.command == "memory-clear"

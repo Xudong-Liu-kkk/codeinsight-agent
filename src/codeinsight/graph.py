@@ -16,10 +16,11 @@ Synthesizer— 汇总所有步骤的发现，生成结构化最终回答。
 findings 列表在 Executor 中逐步追加，确保每一步的分析发现都可追溯。
 """
 
+import sys
 from typing import Annotated, TypedDict
 
 from langchain.agents import create_agent
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
@@ -177,19 +178,58 @@ def build_ask_graph(chat_model, tools, memory_context: str = ""):
             ),
         )
 
-        # 用 create_agent 构建一个临时的 ReAct 循环来执行单个子任务。
-        # 这会自动处理"调工具 → 收结果 → 再调工具 → 最终回答"的循环。
+        # 用 create_agent 构建 ReAct 循环，通过 stream 逐 token 输出。
         step_agent = create_agent(
             model=chat_model,
             tools=tools,
             system_prompt=EXECUTOR_PROMPT + "\n" + memory_context if memory_context else EXECUTOR_PROMPT,
         )
-        result = step_agent.invoke({"messages": [task_msg]})
-        msgs = result.get("messages", [])
 
-        # 提取 Agent 的最终回答（不带 tool_calls 的 AIMessage）。
+        # 流式执行子任务：逐 token 输出到 stderr，同时累积完整结果。
+        # create_agent 的 stream 格式：messages mode → (mode, (msg, metadata))
+        final_messages: list = []
+        pending_tool_names: set = set()
+        for event in step_agent.stream(
+            {"messages": [task_msg]},
+            stream_mode=["messages", "updates"],
+        ):
+            mode, data = event
+
+            if mode == "messages":
+                # messages 模式下 data 是 (message, metadata) 元组。
+                msg, _metadata = data
+
+                # —— 逐 token 流式输出 ——
+                content = getattr(msg, "content", None)
+                tool_call_chunks = getattr(msg, "tool_call_chunks", []) if hasattr(msg, "tool_call_chunks") else []
+
+                # 工具调用摘要（首次出现时输出工具名）。
+                for tc in tool_call_chunks:
+                    tc_name = getattr(tc, "name", None)
+                    if tc_name and tc_name not in pending_tool_names:
+                        pending_tool_names.add(tc_name)
+                        print(f"\n  → 调用工具：{tc_name}", file=sys.stderr, flush=True)
+
+                # LLM 逐 token 输出。
+                if content:
+                    print(content, end="", file=sys.stderr, flush=True)
+
+                # 工具返回结果摘要。
+                if isinstance(msg, ToolMessage):
+                    result_preview = str(msg.content)[:100]
+                    print(f" → {result_preview}", file=sys.stderr, flush=True)
+
+            elif mode == "updates":
+                # —— 累积消息状态 ——
+                for _node_name, output in data.items():
+                    msgs = output.get("messages", [])
+                    final_messages.extend(msgs)
+
+        print(file=sys.stderr, flush=True)  # 换行
+
+        # 提取最终回答。
         answer = ""
-        for msg in reversed(msgs):
+        for msg in reversed(final_messages):
             if isinstance(msg, AIMessage) and msg.content and not getattr(msg, "tool_calls", None):
                 answer = str(msg.content)
                 break

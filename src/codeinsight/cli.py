@@ -11,6 +11,7 @@ from typing import Any
 from codeinsight.agent import run_ask, run_pr_review, run_review
 from codeinsight.engine import run_deps, run_diagnose, run_overview, run_read, run_search
 from codeinsight.llm import load_env_from_dir
+from codeinsight.memory import ProjectMemory
 from codeinsight.schemas import AnalysisReport
 
 
@@ -114,6 +115,7 @@ def _build_parser() -> argparse.ArgumentParser:
     review_parser.add_argument("--root", required=True, help="项目根目录。")
     review_parser.add_argument("--path", required=True, help="相对于项目根目录的文件路径。")
     review_parser.add_argument("--provider", required=False, help="可选 Provider，例如 openai、deepseek、qwen、ollama。")
+    review_parser.add_argument("--symbol", required=False, help="仅审查文件中指定名称的函数或类。")
     review_parser.add_argument("--max-lines", type=int, default=400, help="最大读取行数，默认 400。")
     review_parser.add_argument("--json", action="store_true", help="以 JSON 形式输出报告。")
 
@@ -125,6 +127,10 @@ def _build_parser() -> argparse.ArgumentParser:
     pr_review_parser.add_argument("--commit", required=False, help="审查指定的 commit。")
     pr_review_parser.add_argument("--provider", required=False, help="可选 Provider，例如 openai、deepseek、qwen、ollama。")
     pr_review_parser.add_argument("--json", action="store_true", help="以 JSON 形式输出报告。")
+
+    # memory_clear_parser 负责"清空记忆"命令参数。
+    mem_clear_parser = subparsers.add_parser("memory-clear", help="清空项目长期记忆。")
+    mem_clear_parser.add_argument("--root", required=True, help="项目根目录。")
 
     return parser
 
@@ -206,11 +212,25 @@ def main(argv: list[str] | None = None) -> int:
         _print_report(report, args_dict["json"])
         return 0
 
+    # 根据命令类型分发到记忆清空逻辑。
+    if args.command == "memory-clear":
+        from pathlib import Path
+
+        root_path = Path(args_dict["root"]).resolve()
+        if root_path.exists() and root_path.is_dir():
+            memory = ProjectMemory(root=root_path)
+            memory.clear()
+            print(f"已清空项目记忆：{memory.memory_dir}")
+        else:
+            print(f"项目根目录不存在：{root_path}")
+        return 0
+
     # review 是剩余的合法命令；argparse 已保证不会出现其他命令。
     # report 是代码审查命令返回的统一结构化报告。
     report = run_review(
         args_dict["root"],
         args_dict["path"],
+        symbol=args_dict.get("symbol"),
         provider=args_dict.get("provider"),
         max_lines=args_dict["max_lines"],
     )

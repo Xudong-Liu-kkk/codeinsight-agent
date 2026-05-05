@@ -12,12 +12,14 @@
 """
 
 from pathlib import Path
+import sys
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from codeinsight.agent_tools import _report_to_text, create_tools
 from codeinsight.engine import run_read
 from codeinsight.git_tool import get_branch_diff, get_commit_diff, get_uncommitted_diff
+from codeinsight.tools.symbol_tool import find_symbol_source
 from codeinsight.graph import build_ask_graph
 from codeinsight.llm import LLMConfigError, create_langchain_chat_model, load_env_from_dir
 from codeinsight.memory import ProjectMemory
@@ -96,8 +98,32 @@ def run_ask(root: str, question: str, provider: str | None = None) -> AnalysisRe
     tools, get_evidence = create_tools(str(root_path), memory=memory)
     ask_graph = build_ask_graph(chat_model, tools, memory_context)
 
+    # 节点级进度走外层 stream，逐 token 输出在 graph.py 的 Executor 内部处理。
+    result: dict = {}
+    steps_count = 0
     try:
-        result = ask_graph.invoke({"messages": [HumanMessage(content=question.strip())]})
+        for chunk in ask_graph.stream(
+            {"messages": [HumanMessage(content=question.strip())]},
+            stream_mode="updates",
+        ):
+            for node_name, node_output in chunk.items():
+                if node_name == "planner":
+                    steps_count = len(node_output.get("plan_steps", []))
+                    print(f"\n→ Planner 拆解为 {steps_count} 个子任务：", file=sys.stderr, flush=True)
+                    for i, step in enumerate(node_output.get("plan_steps", []), 1):
+                        print(f"  [{i}] {step}", file=sys.stderr, flush=True)
+                elif node_name == "executor":
+                    idx = node_output.get("current_step", 0)
+                    if steps_count:
+                        print(f"\n── [{idx}/{steps_count}] Executor 开始执行 ──", file=sys.stderr, flush=True)
+                elif node_name == "reviewer":
+                    is_ok = node_output.get("is_sufficient", "NO")
+                    it = node_output.get("iteration", 0)
+                    label = "✓ 充分" if is_ok == "YES" else "✗ 不足，将补充执行"
+                    print(f"\n→ Reviewer 审查结果：{label}（第 {it} 轮）", file=sys.stderr, flush=True)
+                elif node_name == "synthesizer":
+                    print(f"\n→ Synthesizer 正在汇总生成回答：\n", file=sys.stderr, flush=True)
+                result.update(node_output)
     except Exception as exc:
         return AnalysisReport(
             summary=f"ask 调用大模型失败：{exc}",
@@ -156,10 +182,20 @@ def run_ask(root: str, question: str, provider: str | None = None) -> AnalysisRe
 def run_review(
     root: str,
     file_path: str,
+    symbol: str | None = None,
     provider: str | None = None,
     max_lines: int = 400,
 ) -> AnalysisReport:
-    """对指定项目文件执行只读代码审查。"""
+    """对指定项目文件（或其中的符号）执行只读代码审查。
+
+    Args:
+        root: 项目根目录。
+        file_path: 相对于 root 的文件路径。
+        symbol: 可选的要审查的符号名（函数或类）。
+                传入时只审查该符号的源码，而非整个文件。
+        provider: 可选的 LLM Provider 名称。
+        max_lines: 审查整个文件时的最大读取行数。
+    """
     load_env_from_dir(root)
     root_path = Path(root).resolve()
     if not root_path.exists() or not root_path.is_dir():
@@ -191,6 +227,9 @@ def run_review(
             confidence="high",
         )
 
+    # —— 读取文件内容 ——
+    # 如果指定了 symbol，先读整个文件再用 ast 提取目标符号源码。
+    # 如果未指定 symbol，直接读取文件片段。
     read_report = run_read(str(root_path), file_path, start_line=1, end_line=None, max_lines=max_lines)
     if not read_report.evidence:
         return AnalysisReport(
@@ -207,6 +246,30 @@ def run_review(
             recommendations=["可先使用 read 命令验证文件是否可读取。"],
             confidence="high",
         )
+
+    # 符号提取：用 ast 精确定位函数或类的源码片段。
+    review_content = _report_to_text(read_report)
+    review_target = f"文件 {file_path!r}"
+    if symbol:
+        safe_path = (root_path / file_path).resolve()
+        symbol_source = find_symbol_source(safe_path, symbol)
+        if symbol_source:
+            review_content = symbol_source
+            review_target = f"文件 {file_path!r} 中的符号 {symbol!r}"
+        else:
+            return AnalysisReport(
+                summary=f"review 失败：未在 {file_path!r} 中找到符号 {symbol!r}。",
+                findings=[
+                    Finding(
+                        title="符号未找到",
+                        severity="medium",
+                        detail=f"在文件 {file_path!r} 中未找到名为 {symbol!r} 的函数或类。",
+                        suggestion="请确认符号名拼写正确，区分大小写。",
+                    )
+                ],
+                recommendations=["可先使用 read 命令查看文件内容，确认符号名称。"],
+                confidence="high",
+            )
 
     try:
         chat_model = create_langchain_chat_model(provider=provider)
@@ -227,9 +290,9 @@ def run_review(
 
     review_prompt = (
         f"项目根目录：{root_path}\n"
-        f"待审查文件：{file_path}\n\n"
-        "以下是只读读取工具返回的文件内容：\n\n"
-        f"{_report_to_text(read_report)}"
+        f"待审查目标：{review_target}\n\n"
+        "以下是待审查的代码内容：\n\n"
+        f"{review_content}"
     )
     try:
         response = chat_model.invoke([
@@ -258,7 +321,7 @@ def run_review(
             Finding(
                 title="review 已完成只读代码审查",
                 severity="info",
-                detail=f"大模型已基于文件 {file_path!r} 的只读内容生成审查建议。",
+                detail=f"大模型已基于 {review_target} 的只读内容生成审查建议。",
                 suggestion="如文件较大，可分段 review，或结合 ask 追问具体风险点。",
             )
         ],

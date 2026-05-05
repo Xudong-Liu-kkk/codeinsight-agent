@@ -291,3 +291,23 @@ class ProjectMemory:
             )
 
         return "\n".join(parts)
+
+    # —— 记忆清空 ——
+
+    def clear(self) -> None:
+        """清空所有项目记忆数据。
+
+        删除整个 .codeinsight/memory/ 目录，包括文件索引、
+        导入关系和问答历史。下次 ask 时将从头构建记忆。
+        """
+        if not self.memory_dir.exists():
+            return
+        for f in self.memory_dir.iterdir():
+            try:
+                f.unlink()
+            except OSError:
+                pass
+        try:
+            self.memory_dir.rmdir()
+        except OSError:
+            pass
