@@ -36,6 +36,14 @@ class TestApplyFix:
         f.write_text("pass\npass\n", encoding="utf-8")
         assert not apply_fix(str(f), "pass", "return")
 
+    def test_apply_fix_rejects_syntax_error(self, tmp_path):
+        """验证：修复后语法错误返回 False，原文件不变。"""
+        f = tmp_path / "demo.py"
+        f.write_text("x = 1\n", encoding="utf-8")
+        # replacement 缺少引号闭合，有语法错误。
+        assert not apply_fix(str(f), "x = 1", 'x = "unclosed')
+        assert f.read_text(encoding="utf-8") == "x = 1\n"
+
 
 class TestGenerateDiff:
     """generate_diff 单元测试。"""

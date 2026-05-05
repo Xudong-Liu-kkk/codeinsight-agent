@@ -40,6 +40,14 @@ def apply_fix(file_path: str, original: str, replacement: str) -> bool:
         return False
 
     new_content = content.replace(original, replacement, 1)
+
+    # Python 文件：编译检查替换后的代码是否有语法错误。
+    if path.suffix == ".py":
+        try:
+            compile(new_content, str(path), "exec")
+        except SyntaxError:
+            return False
+
     # 备份原文件为 .bak，便于回滚。
     backup_path = path.with_suffix(path.suffix + ".bak")
     backup_path.write_text(content, encoding="utf-8")

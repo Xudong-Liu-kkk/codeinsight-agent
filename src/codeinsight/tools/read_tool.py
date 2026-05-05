@@ -38,14 +38,24 @@ def read_file_lines(
     if not safe_path.exists() or not safe_path.is_file():
         raise ValueError(f"文件不存在或不可读：{safe_path}")
 
-    # lines 是文件全文行列表（去除结尾换行符）。
-    lines = safe_path.read_text(encoding="utf-8").splitlines()
+    # 读取文件全文，支持语义分块。
+    raw_text = safe_path.read_text(encoding="utf-8")
+    lines = raw_text.splitlines()
+
     # normalized_start 对起始行号做下限保护。
     normalized_start = max(1, start_line)
     # normalized_end 为结束行号，未传则默认到文件末尾。
     normalized_end = len(lines) if end_line is None else min(len(lines), end_line)
     if normalized_start > normalized_end:
         raise ValueError("读取行区间无效：起始行大于结束行。")
+
+    # Python 文件：用 AST 语义分块，确保不截断函数/类。
+    if safe_path.suffix == ".py" and end_line is not None:
+        from codeinsight.tools.chunk_tool import smart_read_range
+        expanded_start, expanded_end = smart_read_range(raw_text, normalized_start, normalized_end)
+        # 如果扩展后仍在可接受范围内（不超过 2 倍 max_lines），应用扩展。
+        if expanded_end - expanded_start <= max_lines * 2:
+            normalized_start, normalized_end = expanded_start, expanded_end
 
     # selected_lines 为按区间切出的原始内容。
     selected_lines = lines[normalized_start - 1 : normalized_end]

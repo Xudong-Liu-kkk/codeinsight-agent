@@ -149,6 +149,24 @@ def load_env_from_dir(root: str) -> None:
         load_dotenv(env_path, override=False)
 
 
+def _get_langfuse_callback():
+    """如果配置了 LangFuse 环境变量，返回 CallbackHandler。
+
+    需要设置 LANGFUSE_PUBLIC_KEY 和 LANGFUSE_SECRET_KEY，
+    LangFuse v4 自动从环境变量读取 host / base_url 等配置。
+    """
+    import os as _os
+
+    public_key = _os.getenv("LANGFUSE_PUBLIC_KEY", "").strip()
+    secret_key = _os.getenv("LANGFUSE_SECRET_KEY", "").strip()
+    if not public_key or not secret_key:
+        return None
+
+    from langfuse.langchain import CallbackHandler
+
+    return CallbackHandler()
+
+
 def create_langchain_chat_model(provider: str | None = None):
     """根据配置创建 LangChain ChatOpenAI 实例。
 
@@ -157,6 +175,9 @@ def create_langchain_chat_model(provider: str | None = None):
 
     针对 DeepSeek V4 系列模型自动关闭 thinking 模式，
     避免 reasoning_content 在 Agent 多轮对话中被丢弃导致 API 400 错误。
+
+    如果配置了 LANGFUSE_PUBLIC_KEY + LANGFUSE_SECRET_KEY 环境变量，
+    自动注入 LangFuse CallbackHandler，全链路追踪 LLM 调用。
     """
     from langchain_openai import ChatOpenAI
 
@@ -165,10 +186,16 @@ def create_langchain_chat_model(provider: str | None = None):
     if config.provider == "deepseek" and "v4" in config.model.lower():
         extra_body = {"thinking": {"type": "disabled"}}
 
+    callbacks = []
+    lf_handler = _get_langfuse_callback()
+    if lf_handler:
+        callbacks.append(lf_handler)
+
     return ChatOpenAI(
         model=config.model,
         api_key=config.api_key,
         base_url=config.base_url,
         temperature=0.2,
+        callbacks=callbacks if callbacks else None,
         **({"extra_body": extra_body} if extra_body else {}),
     )

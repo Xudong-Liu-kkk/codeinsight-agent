@@ -146,6 +146,11 @@ def _build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--port", type=int, default=8888, help="监听端口，默认 8888。")
     serve_parser.add_argument("--host", default="127.0.0.1", help="监听地址，默认 127.0.0.1。")
 
+    # eval_parser 负责"Agent 评估"命令参数。
+    eval_parser = subparsers.add_parser("eval", help="运行 Agent 标准评估。")
+    eval_parser.add_argument("--root", required=True, help="项目根目录。")
+    eval_parser.add_argument("--provider", required=False, help="可选 Provider。")
+
     return parser
 
 
@@ -255,6 +260,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"CodeInsight Agent API 启动：http://{host}:{port}/docs", file=sys.stderr)
         app = create_app(args_dict["root"])
         uvicorn.run(app, host=host, port=port, log_level="info")
+        return 0
+
+    # 根据命令类型分发到 Agent 评估逻辑。
+    if args.command == "eval":
+        from codeinsight.eval import run_eval
+        report = run_eval(args_dict["root"], provider=args_dict.get("provider"))
+        print(f"\n{report.summary}")
         return 0
 
     # review 是剩余的合法命令；argparse 已保证不会出现其他命令。
