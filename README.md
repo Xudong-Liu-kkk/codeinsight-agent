@@ -20,6 +20,8 @@ uv run codeinsight deps --root .
 uv run codeinsight pr-review --root .
 uv run codeinsight fix --root . --issue "第 85 行可能返回 None"
 uv run codeinsight serve --root . --port 8888
+uv run codeinsight eval --root .
+docker compose up -d
 uv run pytest
 ```
 
@@ -209,6 +211,30 @@ uv run codeinsight serve --root . --port 8888
 
 `serve` 启动 FastAPI 服务，暴露 10 个 REST 端点。其中 `/ask/stream` 通过 SSE 实时推送 Agent 分析过程。
 
+### Agent 评估
+
+```bash
+uv run codeinsight eval --root .
+```
+
+`eval` 运行标准题库，检查 Agent 回答是否包含预期的关键词和文件引用，生成评分报告。
+
+### Docker 部署
+
+```bash
+docker compose up -d
+# 打开 http://localhost:8888/docs
+```
+
+### 可观测性（LangFuse）
+
+在 `.env` 中配置以下变量即可自动追踪所有 LLM 调用：
+
+```bash
+LANGFUSE_PUBLIC_KEY=pk-xxx
+LANGFUSE_SECRET_KEY=sk-xxx
+```
+
 ### JSON 输出
 
 所有当前命令都支持 `--json`，便于后续接入脚本或上层系统：
@@ -225,17 +251,19 @@ uv run codeinsight deps --root . --json
 
 ## 当前范围
 
-- 提供 `ask`、`overview`、`search`、`read`、`diagnose`、`review`、`deps`、`pr-review`、`fix`、`serve`、`memory-clear` 十一个 CLI 命令
-- 多 Agent 协作：Planner / Reader / Reviewer / Synthesizer 四个独立 Agent，各有专属 prompt 和工具集
-- `ask` 附带证据链追溯 + CLI 逐 token 流式输出 + SSE 流式 API
-- `serve` 启动 FastAPI 服务，10 个 REST 端点 + Swagger 文档
-- `review` 支持 `--symbol` 聚焦审查函数/类
-- `pr-review` 支持 commit、分支对比、工作区变更三种模式
-- `fix` 自动搜索 → 生成修复 → 展示 diff → 确认 → 应用 → 跑测试 → 失败回滚
-- `diagnose` 覆盖 10 种常见 Python 异常的专项排查建议
-- 项目长期记忆：文件索引、问答历史持久化到 `.codeinsight/memory/`
+- 提供 12 个 CLI 命令：`ask` / `review` / `pr-review` / `fix` / `eval` / `serve` / `overview` / `search` / `read` / `diagnose` / `deps` / `memory-clear`
+- 多 Agent 协作：Planner / Reader / Reviewer / Synthesizer 四个独立 Agent
+- `ask`：证据链追溯 + CLI 逐 token 流式输出 + SSE 流式 API
+- `serve`：FastAPI 服务，10 个 REST 端点 + Swagger 文档
+- `review`：支持 `--symbol` 聚焦审查函数/类，AST 语义分块不截断代码
+- `pr-review`：支持 commit / 分支对比 / 工作区变更三种模式
+- `fix`：搜索→生成→确认→应用→跑测试→失败回滚 + py_compile 语法预检查
+- `eval`：5 道标准题库，自动评分量化 Agent 质量
+- `diagnose`：覆盖 10 种常见 Python 异常的专项排查建议
+- 项目长期记忆：文件索引 + import 关系图 + 问答历史持久化
+- LangFuse 可观测性：配置环境变量即可全链路追踪 LLM 调用
+- Docker 一键部署 + GitHub Actions CI + 65% 测试覆盖率（112 用例）
 - `.env` 自动加载 + 多 Provider 兼容（openai / deepseek / qwen / ollama）
-- CI：GitHub Actions 自动测试，104 个测试用例
 
 ## 开发约定
 
@@ -259,9 +287,9 @@ uv run codeinsight deps --root . --json
 | V4 | fix 自动修复（搜索→生成→确认→应用→测试→回滚） |
 | V5 | 多 Agent 协作（Planner / Reader / Reviewer / Synthesizer 子 Agent） |
 | API | FastAPI REST + SSE 流式接口 |
+| 可观测性 | LangFuse 全链路追踪 + Agent 评估框架 + 语义分块 + Docker 部署 |
 
 ## 下一步计划
 
-- **Docker 容器化**：`docker compose up` 一键部署
-- **测试覆盖率报告**：pytest --cov 量化测试覆盖
-- **支持更多项目类型**：`requirements.txt`、`Pipfile` 等依赖格式
+- 发布到 PyPI，支持 `pip install codeinsight-agent`
+- 支持更多项目类型：`requirements.txt`、`Pipfile` 等依赖格式
