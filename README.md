@@ -263,14 +263,17 @@ uv run codeinsight deps --root . --json
 
 - 提供 12 个 CLI 命令：`ask` / `review` / `pr-review` / `fix` / `eval` / `serve` / `overview` / `search` / `read` / `diagnose` / `deps` / `memory-clear`
 - 多 Agent 协作：Planner / Reader / Reviewer / Synthesizer 四个独立 Agent
-- `ask`：证据链追溯 + CLI 逐 token 流式输出 + SSE 流式 API
-- `serve`：FastAPI 服务，10 个 REST 端点 + Swagger 文档
-- `review`：支持 `--symbol` 聚焦审查函数/类，AST 语义分块不截断代码
+- `ask`：证据链追溯 + CLI 逐 token 流式输出 + SSE 流式 API + 会话短期记忆（`--session-id`）
+- `serve`：FastAPI 服务 + Web UI（`/`） + 10 个 REST 端点 + Swagger 文档
+- `review`：支持 `--symbol` 聚焦审查函数/类，tree-sitter 语义分块不截断代码
 - `pr-review`：支持 commit / 分支对比 / 工作区变更三种模式
-- `fix`：搜索→生成→确认→应用→跑测试→失败回滚 + py_compile 语法预检查
+- `fix`：搜索→生成→确认→应用→跑测试→失败回滚 + 多语言语法检查
 - `eval`：5 道标准题库，自动评分量化 Agent 质量
-- `diagnose`：覆盖 10 种常见 Python 异常的专项排查建议
-- 项目长期记忆：文件索引 + import 关系图 + 问答历史持久化
+- `find_usages`：反向依赖查询，回答"改了这里会影响谁"
+- `diagnose`：支持 Python / Java / JS 三种错误堆栈解析
+- `deps`：支持 pyproject.toml / package.json / pom.xml / go.mod 四种依赖格式
+- 多语言代码解析：tree-sitter 统一 Python / Java / JS / TS / Go 语义分析
+- 长期记忆（跨会话） + 短期记忆（同会话连续追问）
 - LangFuse 可观测性：配置环境变量即可全链路追踪 LLM 调用
 - Docker 一键部署 + GitHub Actions CI + 65% 测试覆盖率（112 用例）
 - `.env` 自动加载 + 多 Provider 兼容（openai / deepseek / qwen / ollama）
@@ -296,10 +299,12 @@ uv run codeinsight deps --root . --json
 | V3 | Git PR 审查 + .env 自动加载 + 搜索过滤优化 |
 | V4 | fix 自动修复（搜索→生成→确认→应用→测试→回滚） |
 | V5 | 多 Agent 协作（Planner / Reader / Reviewer / Synthesizer 子 Agent） |
-| API | FastAPI REST + SSE 流式接口 |
+| API | FastAPI REST + SSE 流式接口 + Web UI |
 | 可观测性 | LangFuse 全链路追踪 + Agent 评估框架 + 语义分块 + Docker 部署 |
+| V6 | tree-sitter 多语言化 + deps/diagnose 多语言 + find_usages + 短期记忆 |
 
 ## 下一步计划
 
 - 发布到 PyPI，支持 `pip install codeinsight-agent`
-- 支持更多项目类型：`requirements.txt`、`Pipfile` 等依赖格式
+- 搜索层改造：启动预扫描建符号索引，搜索命中完整函数定义
+- 多轮对话增强：会话内自然追问，Agent 自动关联前轮上下文

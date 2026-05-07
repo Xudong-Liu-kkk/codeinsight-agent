@@ -110,6 +110,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ask_parser.add_argument("--root", required=True, help="需要分析的项目根目录。")
     ask_parser.add_argument("--question", required=True, help="要提给 Agent 的自然语言问题。")
     ask_parser.add_argument("--provider", required=False, help="可选 Provider，例如 openai、deepseek、qwen、ollama。")
+    ask_parser.add_argument("--session-id", required=False, help="可选会话 ID，同一 ID 的连续追问会复用前轮分析发现。")
     ask_parser.add_argument("--json", action="store_true", help="以 JSON 形式输出报告。")
 
     # review_parser 负责“代码审查”命令参数。
@@ -222,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
     # 根据命令类型分发到自然语言 ask 逻辑。
     if args.command == "ask":
         # report 是自然语言 Agent 返回的统一结构化报告。
-        report = run_ask(args_dict["root"], args_dict["question"], provider=args_dict.get("provider"))
+        report = run_ask(args_dict["root"], args_dict["question"], provider=args_dict.get("provider"), session_id=args_dict.get("session_id"))
         _print_report(report, args_dict["json"])
         return 0
 

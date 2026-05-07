@@ -13,8 +13,9 @@ import json as _json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Form
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from codeinsight.agent import run_ask, run_fix, run_pr_review, run_review
 from codeinsight.engine import run_deps, run_diagnose, run_overview, run_read, run_search
@@ -53,15 +54,20 @@ def create_app(root: str) -> FastAPI:
 
     # —— 自然语言问答（同步）——
     @app.post("/ask")
-    async def ask(question: str, provider: str | None = None):
-        """自然语言问答：大模型自主调用工具分析代码库（同步返回）。"""
-        report = run_ask(str(root_path), question, provider=provider)
+    async def ask(question: str = Form(), provider: str | None = Form(None), session_id: str | None = Form(None)):
+        """自然语言问答：大模型自主调用工具分析代码库（同步返回）。
+
+        传入 session_id 可启用会话短期记忆，后续追问会复用前几轮的分析发现。
+        """
+        report = run_ask(str(root_path), question, provider=provider, session_id=session_id)
         return _report_to_response(report)
 
     # —— 自然语言问答（SSE 流式）——
     @app.post("/ask/stream")
-    async def ask_stream(question: str, provider: str | None = None):
+    async def ask_stream(question: str = Form(), provider: str | None = Form(None), session_id: str | None = Form(None)):
         """自然语言问答 SSE 流式：实时输出 Agent 的规划和执行过程。
+
+        传入 session_id 可启用会话短期记忆。
 
         事件类型：
           plan      — Planner 拆解的任务列表
@@ -90,6 +96,18 @@ def create_app(root: str) -> FastAPI:
 
         memory = ProjectMemory(root=root_path)
         memory_context = memory.build_context()
+
+        # 加载会话短期记忆。
+        session_context = ""
+        if session_id:
+            from codeinsight.session import get_session_memory
+            session_memory = get_session_memory()
+            session_context = session_memory.build_context(session_id)
+
+        effective_question = question.strip()
+        if session_context:
+            effective_question = f"{session_context}\n\n当前问题：{effective_question}"
+
         tools, get_evidence = create_tools(str(root_path), memory=memory)
         ask_graph = build_ask_graph(chat_model, tools, memory_context)
 
@@ -99,10 +117,11 @@ def create_app(root: str) -> FastAPI:
 
         async def event_generator():
             steps_count = 0
+            stream_findings: list[str] = []
 
             try:
                 for chunk in ask_graph.stream(
-                    {"messages": [HumanMessage(content=question.strip())]},
+                    {"messages": [HumanMessage(content=effective_question)]},
                     stream_mode="updates",
                 ):
                     for node_name, node_output in chunk.items():
@@ -113,6 +132,10 @@ def create_app(root: str) -> FastAPI:
                             })
                         elif node_name == "executor":
                             idx = node_output.get("current_step", 0)
+                            # 收集本轮发现，供后续追问复用。
+                            findings = node_output.get("findings", [])
+                            if findings:
+                                stream_findings.extend(findings)
                             yield _sse_format("step", {
                                 "current": idx,
                                 "total": steps_count,
@@ -159,6 +182,11 @@ def create_app(root: str) -> FastAPI:
                 memory.add_history(question.strip(), answer)
             except Exception:
                 pass
+            if session_id and stream_findings:
+                try:
+                    get_session_memory().save(session_id, question.strip(), stream_findings)
+                except Exception:
+                    pass
 
         return StreamingResponse(
             event_generator(),
@@ -248,5 +276,10 @@ def create_app(root: str) -> FastAPI:
         memory = ProjectMemory(root=root_path)
         memory.clear()
         return {"status": "ok", "message": "项目记忆已清空"}
+
+    # 挂载 Web UI 静态文件目录。
+    static_dir = Path(__file__).parent / "static"
+    if static_dir.exists():
+        app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
 
     return app

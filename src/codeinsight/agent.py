@@ -38,7 +38,7 @@ REVIEW_SYSTEM_PROMPT = (
 
 # —— ask 命令 ——
 
-def run_ask(root: str, question: str, provider: str | None = None) -> AnalysisReport:
+def run_ask(root: str, question: str, provider: str | None = None, session_id: str | None = None) -> AnalysisReport:
     """运行自然语言 ask Agent。
 
     大模型通过 LangChain Agent 自主决定调用哪些只读工具，
@@ -96,6 +96,18 @@ def run_ask(root: str, question: str, provider: str | None = None) -> AnalysisRe
     memory = ProjectMemory(root=root_path)
     memory_context = memory.build_context()
 
+    # 加载会话短期记忆（同一 session 内前几轮的分析发现）。
+    session_context = ""
+    if session_id:
+        from codeinsight.session import get_session_memory
+        session_memory = get_session_memory()
+        session_context = session_memory.build_context(session_id)
+
+    # 将短期记忆拼入用户问题，让 Agent 直接在已有分析上深化。
+    effective_question = question.strip()
+    if session_context:
+        effective_question = f"{session_context}\n\n当前问题：{effective_question}"
+
     tools, get_evidence = create_tools(str(root_path), memory=memory)
     ask_graph = build_ask_graph(chat_model, tools, memory_context)
 
@@ -104,7 +116,7 @@ def run_ask(root: str, question: str, provider: str | None = None) -> AnalysisRe
     steps_count = 0
     try:
         for chunk in ask_graph.stream(
-            {"messages": [HumanMessage(content=question.strip())]},
+            {"messages": [HumanMessage(content=effective_question)]},
             stream_mode="updates",
         ):
             for node_name, node_output in chunk.items():
@@ -156,6 +168,14 @@ def run_ask(root: str, question: str, provider: str | None = None) -> AnalysisRe
         memory.add_history(question.strip(), answer)
     except OSError:
         pass
+
+    # 将本轮分析发现存入会话短期记忆。
+    if session_id:
+        try:
+            findings_texts = result.get("findings", [])
+            get_session_memory().save(session_id, question.strip(), findings_texts)
+        except Exception:
+            pass
 
     return AnalysisReport(
         summary=answer,

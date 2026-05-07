@@ -11,6 +11,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "langfuse>=2.0",
+    "python-multipart>=0.0.12",
     "tree-sitter>=0.23",
 ]
 
@@ -49,3 +50,6 @@ exclude_also = [
 [tool.uv]
 # 将当前项目按可打包项目处理，确保安装 project.scripts 入口命令。
 package = true
+
+[tool.setuptools.package-data]
+codeinsight = ["static/*.html"]

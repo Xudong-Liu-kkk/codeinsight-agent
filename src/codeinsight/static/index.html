@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CodeInsight Agent</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  background: #0d1117; color: #c9d1d9; line-height: 1.5;
+  min-height: 100vh;
+}
+header {
+  background: #161b22; border-bottom: 1px solid #30363d;
+  padding: 12px 24px; display: flex; align-items: center; gap: 12px;
+}
+header h1 { font-size: 18px; font-weight: 600; color: #58a6ff; }
+header span { font-size: 12px; color: #8b949e; }
+main { max-width: 900px; margin: 0 auto; padding: 24px 16px; }
+/* 输入区 */
+.ask-bar {
+  display: flex; gap: 8px; margin-bottom: 24px;
+}
+.ask-bar input {
+  flex: 1; padding: 10px 14px; border-radius: 8px; border: 1px solid #30363d;
+  background: #0d1117; color: #c9d1d9; font-size: 14px; outline: none;
+}
+.ask-bar input:focus { border-color: #58a6ff; }
+.ask-bar button {
+  padding: 10px 20px; border-radius: 8px; border: 1px solid #30363d;
+  background: #238636; color: #fff; font-size: 14px; cursor: pointer;
+  font-weight: 500;
+}
+.ask-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
+/* 流程区 */
+.flow { margin-bottom: 24px; }
+.agent-row {
+  border: 1px solid #21262d; border-radius: 8px; margin-bottom: 6px;
+  overflow: hidden; transition: border-color 0.2s;
+}
+.agent-row.active { border-color: #58a6ff; }
+.agent-row.complete { border-color: #238636; }
+.agent-header {
+  display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+  background: #161b22; cursor: default; font-size: 13px;
+}
+.agent-header .dot {
+  width: 8px; height: 8px; border-radius: 50%; background: #30363d;
+  flex-shrink: 0; transition: background 0.2s;
+}
+.agent-row.active .dot { background: #58a6ff; }
+.agent-row.complete .dot { background: #238636; }
+.agent-name { font-weight: 600; color: #e6edf3; }
+.agent-desc { color: #8b949e; font-size: 12px; margin-left: auto; }
+.agent-body { padding: 8px 14px 10px 30px; font-size: 13px; color: #8b949e; }
+.agent-body .task-item {
+  padding: 3px 0; color: #c9d1d9; display: flex; align-items: center; gap: 6px;
+}
+.agent-body .task-item .icon { font-size: 14px; }
+/* 输出区 */
+.output-area {
+  border: 1px solid #30363d; border-radius: 8px; overflow: hidden;
+}
+.output-header {
+  padding: 8px 14px; background: #161b22; border-bottom: 1px solid #30363d;
+  font-size: 12px; color: #8b949e; display: flex; align-items: center; gap: 6px;
+}
+.output-body {
+  padding: 14px; font-size: 13px; line-height: 1.7; min-height: 60px;
+  white-space: pre-wrap; word-break: break-word;
+}
+/* 证据 */
+.evidence { margin-top: 16px; }
+.evidence h3 { font-size: 14px; margin-bottom: 8px; color: #e6edf3; }
+.evidence-item {
+  padding: 8px 12px; border: 1px solid #21262d; border-radius: 6px;
+  margin-bottom: 4px; font-size: 12px; cursor: pointer;
+}
+.evidence-item:hover { background: #161b22; }
+.evidence-item .file { color: #58a6ff; }
+.evidence-item .reason { color: #8b949e; }
+/* 错误 */
+.error-msg {
+  padding: 10px 14px; background: #490202; border: 1px solid #da3633;
+  border-radius: 6px; color: #f85149; font-size: 13px; margin-bottom: 16px;
+}
+.hidden { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>CodeInsight Agent</h1>
+  <span>多 Agent 协作代码分析</span>
+</header>
+<main>
+  <div class="ask-bar">
+    <input id="question" type="text" placeholder="输入你的问题，例如：这个项目是做什么的？"
+           autofocus />
+    <button id="sendBtn" onclick="ask()">发送</button>
+  </div>
+
+  <div id="errorBox" class="error-msg hidden"></div>
+
+  <!-- 四 Agent 流程 -->
+  <div class="flow" id="flow">
+    <div class="agent-row" id="plannerRow">
+      <div class="agent-header">
+        <span class="dot"></span>
+        <span class="agent-name">Planner</span>
+        <span class="agent-desc">任务规划</span>
+      </div>
+      <div class="agent-body" id="plannerBody"></div>
+    </div>
+    <div class="agent-row" id="readerRow">
+      <div class="agent-header">
+        <span class="dot"></span>
+        <span class="agent-name">Reader</span>
+        <span class="agent-desc" id="readerStatus">等待启动</span>
+      </div>
+      <div class="agent-body" id="readerBody"></div>
+    </div>
+    <div class="agent-row" id="reviewerRow">
+      <div class="agent-header">
+        <span class="dot"></span>
+        <span class="agent-name">Reviewer</span>
+        <span class="agent-desc" id="reviewerStatus">等待审查</span>
+      </div>
+      <div class="agent-body" id="reviewerBody"></div>
+    </div>
+    <div class="agent-row" id="synthRow">
+      <div class="agent-header">
+        <span class="dot"></span>
+        <span class="agent-name">Synthesizer</span>
+        <span class="agent-desc" id="synthStatus">等待汇总</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 回答输出 -->
+  <div class="output-area">
+    <div class="output-header" id="outputHeader">等待提问…</div>
+    <div class="output-body" id="outputBody"></div>
+  </div>
+
+  <!-- 证据链 -->
+  <div class="evidence hidden" id="evidenceBox">
+    <h3>证据链</h3>
+    <div id="evidenceList"></div>
+  </div>
+</main>
+
+<script>
+const TOOL_ICONS = {
+  overview: '📁', search: '🔍', read: '📖',
+  diagnose: '🩺', deps: '📦', find_usages: '🔗',
+};
+
+let es = null;
+
+function ask() {
+  const q = document.getElementById('question').value.trim();
+  if (!q) return;
+
+  // 重置 UI。
+  document.getElementById('errorBox').classList.add('hidden');
+  document.getElementById('outputBody').textContent = '';
+  document.getElementById('outputHeader').textContent = '分析中…';
+  document.getElementById('plannerBody').textContent = '';
+  document.getElementById('readerBody').textContent = '';
+  document.getElementById('readerStatus').textContent = '等待启动';
+  document.getElementById('reviewerBody').textContent = '';
+  document.getElementById('reviewerStatus').textContent = '等待审查';
+  document.getElementById('synthStatus').textContent = '等待汇总';
+  document.getElementById('evidenceBox').classList.add('hidden');
+  document.getElementById('evidenceList').textContent = '';
+  ['plannerRow','readerRow','reviewerRow','synthRow'].forEach(id => {
+    document.getElementById(id).classList.remove('active','complete');
+  });
+  document.getElementById('sendBtn').disabled = true;
+
+  // 关闭上一个 SSE 连接。
+  if (es) { es.close(); es = null; }
+
+  // 用 POST 模拟 EventSource（原生 EventSource 只支持 GET）。
+  fetch('/ask/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ question: q }),
+  }).then(response => {
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    function pump() {
+      reader.read().then(({ done, value }) => {
+        if (done) { finish(); return; }
+        buffer += decoder.decode(value, { stream: true });
+        // 按 \n\n 分割事件。
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop();
+        for (const p of parts) handleEvent(p);
+        pump();
+      }).catch(err => showError(err.message));
+    }
+    pump();
+  }).catch(err => showError(err.message));
+}
+
+function handleEvent(raw) {
+  const lines = raw.split('\n');
+  let event = 'message', data = '';
+  for (const line of lines) {
+    if (line.startsWith('event: ')) event = line.slice(7).trim();
+    else if (line.startsWith('data: ')) data = line.slice(6);
+  }
+  if (!data) return;
+  try { data = JSON.parse(data); } catch (_) {}
+
+  switch (event) {
+    case 'plan':
+      setActive('plannerRow', true);
+      document.getElementById('plannerBody').innerHTML =
+        (data.steps || []).map((s, i) =>
+          `<div class="task-item"><span class="icon">${i+1}.</span> ${esc(s)}</div>`
+        ).join('');
+      break;
+
+    case 'step': {
+      const idx = data.current || 0, total = data.total || 0;
+      setActive('readerRow', true);
+      document.getElementById('readerStatus').textContent =
+        total ? `正在执行 ${idx}/${total}` : `正在执行步骤 ${idx}`;
+      break;
+    }
+
+    case 'tool_call': {
+      const name = data.name || '未知工具';
+      const icon = TOOL_ICONS[name] || '🔧';
+      const body = document.getElementById('readerBody');
+      body.innerHTML += `<div class="task-item">${icon} 调用 <b>${esc(name)}</b></div>`;
+      break;
+    }
+
+    case 'tool_result':
+      // 工具结果：在最后一条工具调用后标记完成。
+      break;
+
+    case 'token': {
+      const text = typeof data === 'string' ? data : (data.text || '');
+      document.getElementById('outputBody').textContent += text;
+      break;
+    }
+
+    case 'review': {
+      const ok = data.sufficient === true || data.sufficient === 'YES';
+      setActive('readerRow', false);
+      setActive('reviewerRow', true);
+      document.getElementById('reviewerStatus').textContent = ok ? '信息充分 ✓' : '信息不足，补充分析';
+      document.getElementById('reviewerBody').textContent =
+        ok ? '审查通过，信息充分，准备汇总。' : '信息不足，需要补充遗漏信息。';
+      break;
+    }
+
+    case 'final': {
+      setActive('reviewerRow', false);
+      setActive('synthRow', true);
+      document.getElementById('synthStatus').textContent = '汇总完成 ✓';
+      document.getElementById('outputHeader').textContent =
+        `分析完成，共收集 ${data.evidence_count || 0} 条证据`;
+      break;
+    }
+
+    case 'error':
+      showError(data.error || '未知错误');
+      break;
+
+    case 'done':
+      finish();
+      break;
+  }
+}
+
+function setActive(rowId, on) {
+  const el = document.getElementById(rowId);
+  if (on) el.classList.add('active');
+  else { el.classList.remove('active'); el.classList.add('complete'); }
+}
+
+function finish() {
+  ['plannerRow','readerRow','reviewerRow','synthRow'].forEach(id => {
+    const el = document.getElementById(id);
+    el.classList.remove('active');
+    el.classList.add('complete');
+  });
+  document.getElementById('sendBtn').disabled = false;
+}
+
+function showError(msg) {
+  const box = document.getElementById('errorBox');
+  box.textContent = '错误：' + msg;
+  box.classList.remove('hidden');
+  document.getElementById('sendBtn').disabled = false;
+}
+
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// Enter 键发送。
+document.getElementById('question').addEventListener('keydown', e => {
+  if (e.key === 'Enter') ask();
+});
+</script>
+</body>
+</html>
