@@ -49,10 +49,14 @@ def read_file_lines(
     if normalized_start > normalized_end:
         raise ValueError("读取行区间无效：起始行大于结束行。")
 
-    # Python 文件：用 AST 语义分块，确保不截断函数/类。
-    if safe_path.suffix == ".py":
+    # 语义分块：对支持的语言自动扩展读取范围到函数/类边界。
+    from codeinsight.tools.language_parser import detect_language
+    lang = detect_language(safe_path)
+    if lang is not None:
         from codeinsight.tools.chunk_tool import smart_read_range
-        expanded_start, expanded_end = smart_read_range(raw_text, normalized_start, normalized_end)
+        expanded_start, expanded_end = smart_read_range(
+            raw_text, normalized_start, normalized_end, language=lang,
+        )
         # 如果扩展后仍在可接受范围内（不超过 2 倍 max_lines），应用扩展。
         if expanded_end - expanded_start <= max_lines * 2:
             normalized_start, normalized_end = expanded_start, expanded_end

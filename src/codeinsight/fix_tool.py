@@ -41,12 +41,22 @@ def apply_fix(file_path: str, original: str, replacement: str) -> bool:
 
     new_content = content.replace(original, replacement, 1)
 
-    # Python 文件：编译检查替换后的代码是否有语法错误。
-    if path.suffix == ".py":
+    # 语法检查：根据语言类型选择验证方式。
+    from codeinsight.tools.language_parser import detect_language, _get_parser
+    lang = detect_language(path)
+    if lang == "python":
+        # Python：用内置 compile() 做完整的语法 + 语义检查。
         try:
             compile(new_content, str(path), "exec")
         except SyntaxError:
             return False
+    elif lang is not None:
+        # 其他语言：用 tree-sitter 检查是否有语法错误节点。
+        parser = _get_parser(lang)
+        if parser is not None:
+            tree = parser.parse(new_content.encode("utf-8"))
+            if tree.root_node.has_error:
+                return False
 
     # 备份原文件为 .bak，便于回滚。
     backup_path = path.with_suffix(path.suffix + ".bak")

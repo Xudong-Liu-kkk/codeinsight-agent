@@ -39,25 +39,18 @@ def _report_to_text(report: AnalysisReport) -> str:
 
 
 def _save_imports_to_memory(memory: ProjectMemory, file_path: str, source: str) -> None:
-    """从 Python 源码中解析 import 语句，存入项目记忆。
+    """从源码中解析 import 语句，存入项目记忆。
 
-    支持 `import xxx` 和 `from xxx import yyy` 两种语法，
-    使用 ast 解析，失败时静默跳过（不影响主流程）。
+    使用 tree-sitter 自动检测语言并提取导入依赖，
+    失败时静默跳过（不影响主流程）。
     """
-    import ast
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
+    from codeinsight.tools.language_parser import detect_language, extract_imports
+
+    language = detect_language(file_path)
+    if language is None:
         return
 
-    imported: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                imported.append(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                imported.append(node.module)
+    imported = extract_imports(source, language)
     if imported:
         try:
             memory.save_imports({file_path: imported})
@@ -125,8 +118,9 @@ def create_tools(root: str, memory: ProjectMemory | None = None) -> tuple[list, 
         """
         report = run_read(root, file_path, start_line=start_line, end_line=end_line, max_lines=200)
         _add_evidence(f"read('{file_path}')", report)
-        # 解析 Python 文件的 import 关系，写入项目长期记忆。
-        if memory is not None and file_path.endswith(".py") and report.evidence:
+        # 解析文件的 import 关系（支持所有语言），写入项目长期记忆。
+        from codeinsight.tools.language_parser import detect_language
+        if memory is not None and detect_language(file_path) is not None and report.evidence:
             _save_imports_to_memory(memory, file_path, report.evidence[0].snippet)
         return _report_to_text(report)
 
