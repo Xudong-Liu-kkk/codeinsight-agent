@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 from langchain_core.tools import tool
 
-from codeinsight.engine import run_deps, run_diagnose, run_overview, run_read, run_search
+from codeinsight.engine import run_deps, run_diagnose, run_find_usages, run_overview, run_read, run_search
 from codeinsight.memory import ProjectMemory
 from codeinsight.schemas import AnalysisReport, CodeEvidence
 
@@ -148,7 +148,17 @@ def create_tools(root: str, memory: ProjectMemory | None = None) -> tuple[list, 
         _add_evidence("deps", report)
         return _report_to_text(report)
 
+    @tool
+    def find_usages(module_name: str) -> str:
+        """查找项目中哪些文件导入了指定模块（反向依赖查询）。
+        module_name 为模块名或文件名，如 'codeinsight.agent'、'engine.py' 或 'agent'。
+        用于回答"谁引用了这个模块""改了这里会影响哪些文件"类问题。
+        """
+        report = run_find_usages(root, module_name)
+        _add_evidence(f"find_usages('{module_name}')", report)
+        return _report_to_text(report)
+
     def get_evidence() -> list[CodeEvidence]:
         return list(evidence_registry)
 
-    return [overview, search, read, diagnose, deps], get_evidence
+    return [overview, search, read, diagnose, deps, find_usages], get_evidence

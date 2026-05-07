@@ -6,6 +6,7 @@
 
 from pathlib import Path
 
+from codeinsight.memory import ProjectMemory
 from codeinsight.schemas import AnalysisReport, CodeEvidence, Finding
 from codeinsight.tools import get_exception_advice, list_project_tree, load_traceback_source, parse_python_traceback, parse_pyproject_deps, read_file_lines, search_code
 
@@ -315,6 +316,83 @@ def run_deps(root: str) -> AnalysisReport:
             "保持依赖最小化，避免引入不必要的第三方库。",
             "定期检查依赖是否存在已知漏洞。",
             "锁文件应纳入版本管理以确保可复现构建。",
+        ],
+        confidence="high",
+    )
+
+
+def run_find_usages(root: str, module_name: str) -> AnalysisReport:
+    """查找项目中哪些文件导入了指定模块。
+
+    基于项目长期记忆中已存储的 import 关系（imports.json），
+    反向查询"谁引用了这个模块"，帮助 Agent 评估修改影响面。
+
+    Args:
+        root: 项目根目录。
+        module_name: 模块名，如 'codeinsight.engine' 或 'agent.py'。
+
+    Returns:
+        AnalysisReport 包含引用文件列表和证据。
+    """
+    root_path = Path(root).resolve()
+    if not root_path.exists() or not root_path.is_dir():
+        return AnalysisReport(
+            summary=f"查询失败：项目根目录不存在：{root_path}",
+            confidence="high",
+        )
+
+    memory = ProjectMemory(root=root_path)
+    importer_files = memory.find_importers(module_name)
+
+    if not importer_files:
+        return AnalysisReport(
+            summary=f"未找到导入了 '{module_name}' 的文件。",
+            findings=[
+                Finding(
+                    title="无引用",
+                    severity="info",
+                    detail=f"当前项目记忆中没有任何文件导入了 '{module_name}'。",
+                    suggestion="可先运行 overview 扫描项目，或确认模块名称是否正确。",
+                )
+            ],
+            confidence="high",
+        )
+
+    # 构建证据：读取前 3 个引用文件的头部（import 区域）作为证据。
+    evidence_list: list[CodeEvidence] = []
+    for importer in importer_files[:3]:
+        importer_path = root_path / importer
+        if importer_path.exists():
+            try:
+                lines = importer_path.read_text(encoding="utf-8").splitlines()
+                head = "\n".join(lines[:30])
+            except (OSError, UnicodeError):
+                head = f"无法读取文件：{importer}"
+        else:
+            head = f"文件不在项目内：{importer}"
+        evidence_list.append(
+            CodeEvidence(
+                file_path=importer,
+                start_line=1,
+                end_line=min(30, len(lines) if importer_path.exists() else 1),
+                snippet=head,
+                reason=f"该文件导入了 {module_name}。",
+            )
+        )
+
+    return AnalysisReport(
+        summary=f"找到 {len(importer_files)} 个文件导入了 '{module_name}'。",
+        findings=[
+            Finding(
+                title=f"引用 '{module_name}' 的文件",
+                severity="info",
+                detail="\n".join(f"  - {f}" for f in importer_files),
+                suggestion="修改该模块时注意评估对这些文件的影响。",
+            )
+        ],
+        evidence=evidence_list,
+        recommendations=[
+            f"共 {len(importer_files)} 个文件依赖 '{module_name}'，修改后建议运行相关测试。",
         ],
         confidence="high",
     )

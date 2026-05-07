@@ -178,6 +178,31 @@ class ProjectMemory:
         """
         return self._read_json("imports.json")
 
+    # —— 导入关系反向查询 ——
+    # 基于已存储的 imports.json，查询"谁导入了指定模块"，
+    # 帮助 Agent 快速评估修改影响面。
+
+    def find_importers(self, module_name: str) -> list[str]:
+        """查找导入了指定模块的所有文件。
+
+        Args:
+            module_name: 模块名，如 'codeinsight.engine'、'agent.py' 或 'agent'。
+                         支持完整匹配和尾部匹配（如 'agent' 匹配 'codeinsight.agent'）。
+
+        Returns:
+            导入了该模块的文件路径列表，按文件名字母序排列。
+        """
+        imports = self.load_imports()
+        result: list[str] = []
+        for file_path, imported_list in imports.items():
+            for imp in imported_list:
+                # 尾部匹配：'engine' 可匹配 'codeinsight.engine'
+                if module_name == imp or imp.endswith("." + module_name):
+                    result.append(file_path)
+                    break
+        result.sort()
+        return result
+
     # —— 问答历史（history.json） ——
     # 保留最近的问答对，为后续对话提供上下文连贯性。
 
@@ -269,7 +294,7 @@ class ProjectMemory:
         # 导入关系 → 告诉 Agent 模块间的依赖链路。
         imports = self.load_imports()
         if imports:
-            parts.append(f"[项目记忆] 已记录 {len(imports)} 个模块的导入关系。")
+            parts.append(f"[项目记忆] 已记录 {len(imports)} 个模块的导入关系，可用 find_usages 工具查询。")
 
         # 问答历史 → 告诉 Agent 之前聊过什么，保持上下文连贯。
         history = self.load_history()
