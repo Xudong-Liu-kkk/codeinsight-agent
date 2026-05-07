@@ -186,6 +186,82 @@ def run_search(root: str, query: str, glob_pattern: str | None = None) -> Analys
     )
 
 
+def run_search_symbol(root: str, symbol_name: str) -> AnalysisReport:
+    """在符号索引中搜索函数/类，返回完整定义。
+
+    基于项目记忆中的符号索引（由 overview 预扫描构建），
+    直接返回匹配符号的完整源码头，而非单行文本片段。
+
+    Args:
+        root: 项目根目录。
+        symbol_name: 要搜索的符号名。
+
+    Returns:
+        AnalysisReport 包含符号定义和文件位置。
+    """
+    root_path = Path(root).resolve()
+    if not root_path.exists() or not root_path.is_dir():
+        return AnalysisReport(
+            summary=f"搜索失败：项目根目录不存在：{root_path}",
+            confidence="high",
+        )
+
+    memory = ProjectMemory(root=root_path)
+    symbols_data = memory.search_symbols(symbol_name)
+
+    if not symbols_data:
+        return AnalysisReport(
+            summary=f"未在符号索引中找到 '{symbol_name}'。",
+            findings=[
+                Finding(
+                    title="未找到符号",
+                    severity="info",
+                    detail=f"符号索引中不存在 '{symbol_name}'。",
+                    suggestion="可先运行 overview 构建索引，或用 search 命令全文搜索。",
+                )
+            ],
+            confidence="high",
+        )
+
+    # 读取匹配符号的完整源码作为证据。
+    evidence_list: list[CodeEvidence] = []
+    for info in symbols_data[:5]:
+        file_path = info["file_path"]
+        full_path = root_path / file_path
+        start, end = info["start_line"], info["end_line"]
+        try:
+            lines = full_path.read_text(encoding="utf-8").splitlines()
+            snippet = "\n".join(lines[start - 1 : end])
+        except (OSError, UnicodeError):
+            snippet = f"无法读取文件：{file_path}"
+        evidence_list.append(
+            CodeEvidence(
+                file_path=file_path,
+                start_line=start,
+                end_line=end,
+                snippet=snippet,
+                reason=f"符号索引命中：{info['kind']} '{info['name']}'。",
+            )
+        )
+
+    return AnalysisReport(
+        summary=f"找到 {len(symbols_data)} 处 '{symbol_name}' 的定义。",
+        findings=[
+            Finding(
+                title=f"符号 '{symbol_name}' 的定义位置",
+                severity="info",
+                detail="\n".join(
+                    f"  - {s['file_path']}:{s['start_line']}-{s['end_line']} [{s['kind']}]"
+                    for s in symbols_data[:10]
+                ),
+                suggestion="可直接读取对应文件查看完整实现。",
+            )
+        ],
+        evidence=evidence_list,
+        confidence="high",
+    )
+
+
 def run_deps(root: str) -> AnalysisReport:
     """分析项目依赖配置并生成报告。"""
 

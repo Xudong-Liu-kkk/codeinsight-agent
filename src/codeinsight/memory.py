@@ -13,6 +13,7 @@
   .codeinsight/memory/
   ├── files.json       # {文件相对路径: mtime}
   ├── imports.json     # {模块路径: [被导入的模块列表]}
+  ├── symbols.json     # {符号名: [{name, file, kind, start_line, end_line}]}
   └── history.json     # [{question, summary, timestamp}]
 
 整个目录由 .gitignore 排除，不会被提交到版本管理。
@@ -203,6 +204,86 @@ class ProjectMemory:
         result.sort()
         return result
 
+    # —— 符号索引（symbols.json） ——
+    # 项目启动时预扫描所有源码文件，提取函数和类建成倒排索引，
+    # Agent 可用 search_symbol 工具直接查询完整函数定义。
+
+    def save_symbol_index(self, index: dict[str, list[dict]]) -> None:
+        """保存符号索引到记忆目录。
+
+        Args:
+            index: {符号名: [{name, file_path, kind, start_line, end_line}, ...]}。
+        """
+        self._write_json("symbols.json", index)
+
+    def load_symbol_index(self) -> dict[str, list[dict]]:
+        """加载符号索引。
+
+        Returns:
+            {符号名: [SymbolInfo-as-dict, ...]}，无记录时返回空 dict。
+        """
+        return self._read_json("symbols.json")
+
+    def rebuild_symbol_index(self) -> int:
+        """重建项目符号索引。
+
+        遍历所有语言支持的文件，用 tree-sitter 提取函数和类名，
+        写入 symbols.json。
+
+        Returns:
+            索引中符号名总数。
+        """
+        from codeinsight.tools.symbol_index import build_symbol_index
+        index = build_symbol_index(self.root)
+        # 转换为可 JSON 序列化的格式。
+        serializable: dict[str, list[dict]] = {}
+        for name, infos in index.items():
+            serializable[name] = [
+                {
+                    "name": info.name,
+                    "file_path": info.file_path,
+                    "kind": info.kind,
+                    "start_line": info.start_line,
+                    "end_line": info.end_line,
+                }
+                for info in infos
+            ]
+        self.save_symbol_index(serializable)
+        return len(serializable)
+
+    def search_symbols(self, symbol_name: str) -> list[dict]:
+        """在符号索引中搜索。
+
+        支持精确匹配和模糊匹配，不区分大小写。
+
+        Args:
+            symbol_name: 要搜索的符号名。
+
+        Returns:
+            匹配的符号信息列表。
+        """
+        raw = self.load_symbol_index()
+        if not raw:
+            return []
+
+        # 精确匹配。
+        if symbol_name in raw:
+            return raw[symbol_name]
+
+        # 大小写不敏感匹配。
+        lower_name = symbol_name.lower()
+        for name, infos in raw.items():
+            if lower_name == name.lower():
+                return infos
+
+        # 部分匹配。
+        results: list[dict] = []
+        for name, infos in raw.items():
+            if lower_name in name.lower():
+                results.extend(infos)
+
+        return sorted(results, key=lambda x: x.get("file_path", ""))
+
     # —— 问答历史（history.json） ——
     # 保留最近的问答对，为后续对话提供上下文连贯性。
 
@@ -265,6 +346,11 @@ class ProjectMemory:
                     # 文件可能在遍历过程中被删除，跳过即可。
                     continue
         self.save_file_index(entries)
+        # 同步构建符号索引，让 Agent 可通过 search_symbol 查询完整函数定义。
+        try:
+            self.rebuild_symbol_index()
+        except Exception:
+            pass
         return entries
 
     def build_context(self) -> str:
@@ -295,6 +381,10 @@ class ProjectMemory:
         imports = self.load_imports()
         if imports:
             parts.append(f"[项目记忆] 已记录 {len(imports)} 个模块的导入关系，可用 find_usages 工具查询。")
+        # 符号索引 → 告诉 Agent 可通过 search_symbol 直接获取完整函数/类定义。
+        symbols = self.load_symbol_index()
+        if symbols:
+            parts.append(f"[项目记忆] 已索引 {len(symbols)} 个符号名，可用 search_symbol 工具查询完整定义。")
 
         # 问答历史 → 告诉 Agent 之前聊过什么，保持上下文连贯。
         history = self.load_history()

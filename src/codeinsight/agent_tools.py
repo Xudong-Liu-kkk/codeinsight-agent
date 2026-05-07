@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 from langchain_core.tools import tool
 
-from codeinsight.engine import run_deps, run_diagnose, run_find_usages, run_overview, run_read, run_search
+from codeinsight.engine import run_deps, run_diagnose, run_find_usages, run_overview, run_read, run_search, run_search_symbol
 from codeinsight.memory import ProjectMemory
 from codeinsight.schemas import AnalysisReport, CodeEvidence
 
@@ -106,6 +106,17 @@ def create_tools(root: str, memory: ProjectMemory | None = None) -> tuple[list, 
         return _report_to_text(report)
 
     @tool
+    def search_symbol(symbol_name: str) -> str:
+        """在符号索引中搜索指定名称的函数或类，直接返回完整定义。
+        symbol_name 为函数名或类名，如 'run_ask'、'ProjectMemory'。
+        与 search（全文关键词搜索）不同，search_symbol 基于预扫描的符号索引，
+        能返回完整的函数/类源代码而非单行片段。
+        """
+        report = run_search_symbol(root, symbol_name)
+        _add_evidence(f"search_symbol('{symbol_name}')", report)
+        return _report_to_text(report)
+
+    @tool
     def read(
         file_path: str,
         start_line: int = 1,
@@ -155,4 +166,4 @@ def create_tools(root: str, memory: ProjectMemory | None = None) -> tuple[list, 
     def get_evidence() -> list[CodeEvidence]:
         return list(evidence_registry)
 
-    return [overview, search, read, diagnose, deps, find_usages], get_evidence
+    return [overview, search, search_symbol, read, diagnose, deps, find_usages], get_evidence

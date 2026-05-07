@@ -9,12 +9,12 @@ def _make_tools(root: str):
     return create_tools(root)
 
 
-def test_create_tools_returns_six_tools(tmp_path):
-    """验证：create_tools 返回 6 个 LangChain 工具和证据收集器。"""
+def test_create_tools_returns_seven_tools(tmp_path):
+    """验证：create_tools 返回 7 个 LangChain 工具和证据收集器。"""
     tools, get_evidence = create_tools(str(tmp_path))
-    assert len(tools) == 6
+    assert len(tools) == 7
     tool_names = {t.name for t in tools}
-    assert tool_names == {"overview", "search", "read", "diagnose", "deps", "find_usages"}
+    assert tool_names == {"overview", "search", "search_symbol", "read", "diagnose", "deps", "find_usages"}
     assert callable(get_evidence)
 
 
