@@ -50,7 +50,7 @@ def read_file_lines(
         raise ValueError("读取行区间无效：起始行大于结束行。")
 
     # Python 文件：用 AST 语义分块，确保不截断函数/类。
-    if safe_path.suffix == ".py" and end_line is not None:
+    if safe_path.suffix == ".py":
         from codeinsight.tools.chunk_tool import smart_read_range
         expanded_start, expanded_end = smart_read_range(raw_text, normalized_start, normalized_end)
         # 如果扩展后仍在可接受范围内（不超过 2 倍 max_lines），应用扩展。
