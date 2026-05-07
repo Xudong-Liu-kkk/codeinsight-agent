@@ -8,7 +8,7 @@ from pathlib import Path
 
 from codeinsight.memory import ProjectMemory
 from codeinsight.schemas import AnalysisReport, CodeEvidence, Finding
-from codeinsight.tools import get_exception_advice, list_project_tree, load_traceback_source, parse_python_traceback, parse_pyproject_deps, read_file_lines, search_code
+from codeinsight.tools import get_exception_advice, list_project_tree, load_traceback_source, parse_deps, parse_error, read_file_lines, search_code
 
 
 def run_overview(root: str) -> AnalysisReport:
@@ -206,19 +206,19 @@ def run_deps(root: str) -> AnalysisReport:
         )
 
     try:
-        deps_result = parse_pyproject_deps(root_path)
+        deps_result = parse_deps(root_path)
     except FileNotFoundError as exc:
         return AnalysisReport(
             summary=f"依赖分析失败：{exc}",
             findings=[
                 Finding(
-                    title="pyproject.toml 不存在",
+                    title="未找到依赖配置文件",
                     severity="high",
                     detail=str(exc),
-                    suggestion="当前仅支持解析 pyproject.toml 格式的 Python 项目依赖。",
+                    suggestion="当前支持 pyproject.toml、package.json、pom.xml、go.mod。",
                 )
             ],
-            recommendations=["在项目根目录创建 pyproject.toml 后重试。"],
+            recommendations=["在项目根目录创建依赖配置文件后重试。"],
             confidence="high",
         )
     except Exception as exc:
@@ -229,10 +229,10 @@ def run_deps(root: str) -> AnalysisReport:
                     title="依赖配置解析失败",
                     severity="high",
                     detail=str(exc),
-                    suggestion="请检查 pyproject.toml 格式是否正确。",
+                    suggestion="请检查依赖配置文件的格式是否正确。",
                 )
             ],
-            recommendations=["确认 pyproject.toml 符合 PEP 621 规范。"],
+            recommendations=["确认配置文件符合对应工具（pip/npm/maven/go）的规范。"],
             confidence="high",
         )
 
@@ -529,7 +529,7 @@ def run_diagnose(root: str, text: str | None = None, traceback_file: str | None 
         )
 
     # traceback_info 是从错误文本中解析出的结构化线索。
-    traceback_info = parse_python_traceback(source.text)
+    traceback_info = parse_error(source.text)
     # evidence_list 保存根据 traceback 栈帧读取到的源码证据。
     evidence_list: list[CodeEvidence] = []
     # skipped_frames 统计因越界、敏感文件或不可读而跳过的栈帧数量。
@@ -600,10 +600,10 @@ def run_diagnose(root: str, text: str | None = None, traceback_file: str | None 
     if not traceback_info.frames:
         findings.append(
             Finding(
-                title="未检测到标准 Python traceback 栈帧",
+                title="未检测到标准错误堆栈",
                 severity="medium",
-                detail="输入文本中没有匹配到 `File ..., line ...` 形式的栈帧。",
-                suggestion="请粘贴完整 traceback，或使用 search 命令搜索异常文本。",
+                detail="输入文本中未匹配到已知格式的堆栈帧。",
+                suggestion="请粘贴完整的 traceback / stack trace，或使用 search 命令搜索异常文本。",
             )
         )
 

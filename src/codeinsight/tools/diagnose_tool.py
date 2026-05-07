@@ -1,7 +1,7 @@
 """错误诊断工具。
 
-本模块负责从 Python traceback 文本中提取结构化线索，
-供引擎层进一步读取源码片段并生成诊断报告。
+本模块负责从 Python traceback / Java stack trace / JS Error 堆栈中
+提取结构化线索，供引擎层进一步读取源码片段并生成诊断报告。
 """
 
 from dataclasses import dataclass
@@ -13,6 +13,28 @@ import re
 TRACEBACK_FRAME_PATTERN = re.compile(r'^\s*File "(?P<file_path>.+?)", line (?P<line_number>\d+), in (?P<function>.+)$')
 # EXCEPTION_PATTERN 用于匹配 traceback 最后一行的异常类型与消息。
 EXCEPTION_PATTERN = re.compile(r"^(?P<type>[A-Za-z_][\w.]*):\s*(?P<message>.*)$")
+
+# Java 堆栈行：at com.foo.Bar.method(Bar.java:42)  或 at com.foo.Bar.main(Bar.java:15)（无方法名）。
+JAVA_FRAME_PATTERN = re.compile(
+    r"^\s*at\s+(?P<class>[a-zA-Z_$][\w.$]+)"
+    r"(?:\.(?P<method>[\w$<>]+))?"
+    r"\((?P<file>[^)]+\.java):(?P<line>\d+)\)"
+)
+# Java 异常头：Exception in thread "..." com.foo.SomeException: message
+JAVA_EXCEPTION_PATTERN = re.compile(
+    r"(?:Exception in thread|Caused by):\s*(?P<type>[\w.]+Exception[\w.]*):?\s*(?P<message>.*)"
+)
+
+# JS/TS 堆栈行：at funcName (/path/to/file.js:10:5)
+JS_FRAME_PATTERN = re.compile(
+    r"^\s*at\s+(?P<function>[^(]+?)\s+\((?P<file>[^)]+\.(?:js|ts|jsx|tsx|mjs)):(?P<line>\d+):(?P<col>\d+)\)"
+)
+# JS 简洁格式：at /path/to/file.js:10:5（匿名函数无方法名）。
+JS_ANON_FRAME_PATTERN = re.compile(
+    r"^\s*at\s+(?P<file>[^(]+\.(?:js|ts|jsx|tsx|mjs)):(?P<line>\d+):(?P<col>\d+)\)?"
+)
+# JS 异常头：TypeError: message  或 ReferenceError: message
+JS_EXCEPTION_PATTERN = re.compile(r"^(?P<type>[A-Za-z_]\w*(?:Error|Exception)):\s*(?P<message>.*)$")
 
 
 @dataclass(slots=True)
@@ -175,3 +197,174 @@ def parse_python_traceback(traceback_text: str) -> TracebackInfo:
             break
 
     return TracebackInfo(frames=frames, exception_type=exception_type, exception_message=exception_message)
+
+
+# —— Java 堆栈解析 ——
+
+
+def parse_java_stacktrace(text: str) -> TracebackInfo:
+    """解析 Java 堆栈信息，提取栈帧和异常类型。
+
+    支持标准 JVM 异常格式：
+        Exception in thread "main" java.lang.NullPointerException: message
+            at com.example.App.process(App.java:42)
+            at com.example.App.main(App.java:15)
+    """
+    frames: list[TracebackFrame] = []
+    non_empty_lines = [line.strip() for line in text.splitlines() if line.strip()]
+
+    for line in text.splitlines():
+        match = JAVA_FRAME_PATTERN.match(line)
+        if not match:
+            continue
+        file_name = match.group("file")
+        line_num = int(match.group("line"))
+        method = match.group("method") or match.group("class").rsplit(".", 1)[-1]
+        frames.append(
+            TracebackFrame(
+                file_path=file_name,
+                line_number=line_num,
+                function=f"{match.group('class')}.{method}",
+            )
+        )
+
+    exception_type: str | None = None
+    exception_message: str | None = None
+    for line in non_empty_lines:
+        java_match = JAVA_EXCEPTION_PATTERN.match(line)
+        if java_match:
+            exception_type = java_match.group("type").rsplit(".", 1)[-1]
+            exception_message = java_match.group("message") or ""
+            break
+
+    return TracebackInfo(frames=frames, exception_type=exception_type, exception_message=exception_message)
+
+
+# —— JS/TS 错误堆栈解析 ——
+
+
+def parse_js_stacktrace(text: str) -> TracebackInfo:
+    """解析 JavaScript/TypeScript 错误堆栈，提取栈帧和异常类型。
+
+    支持标准 V8 引擎 Error 格式：
+        TypeError: Cannot read property 'foo' of null
+            at processFile (/path/to/file.js:10:5)
+            at /path/to/file.js:20:1
+    """
+    frames: list[TracebackFrame] = []
+    non_empty_lines = [line.strip() for line in text.splitlines() if line.strip()]
+
+    for line in text.splitlines():
+        named_match = JS_FRAME_PATTERN.match(line)
+        if named_match:
+            frames.append(
+                TracebackFrame(
+                    file_path=named_match.group("file"),
+                    line_number=int(named_match.group("line")),
+                    function=named_match.group("function").strip(),
+                )
+            )
+        else:
+            anon_match = JS_ANON_FRAME_PATTERN.match(line)
+            if anon_match:
+                frames.append(
+                    TracebackFrame(
+                        file_path=anon_match.group("file"),
+                        line_number=int(anon_match.group("line")),
+                        function="<anonymous>",
+                    )
+                )
+
+    exception_type: str | None = None
+    exception_message: str | None = None
+    for line in non_empty_lines:
+        if line.startswith("at "):
+            continue
+        js_match = JS_EXCEPTION_PATTERN.match(line)
+        if js_match:
+            exception_type = js_match.group("type")
+            exception_message = js_match.group("message")
+            break
+
+    return TracebackInfo(frames=frames, exception_type=exception_type, exception_message=exception_message)
+
+
+# —— 自动检测并解析 ——
+
+
+def parse_error(error_text: str) -> TracebackInfo:
+    """自动检测错误文本格式并解析。
+
+    检测优先级：
+      1. Python traceback（包含 `File "...` 或 `Traceback` 行）
+      2. Java stack trace（包含 `at ` 行和 `.java:` 引用）
+      3. JS/TS Error stack（包含 `at ` 行和 `.js:` / `.ts:` 引用）
+      4. 兜底：尝试按 Python 格式解析（兼容未识别的错误消息）
+
+    Args:
+        error_text: 完整的错误文本。
+
+    Returns:
+        解析后的 TracebackInfo。
+    """
+    # 检测 Python：特征为 `File "...", line N, in func` 或 `Traceback` 开头。
+    if "File \"" in error_text or error_text.strip().startswith("Traceback"):
+        return parse_python_traceback(error_text)
+
+    # 检测 Java：特征为 `at xxx.xxx.xxx(Xxx.java:N)`。
+    if ".java:" in error_text and "at " in error_text:
+        return parse_java_stacktrace(error_text)
+
+    # 检测 JS/TS：特征为 `at func (xxx.js:N:M)` 或 `at xxx.ts:N:M`。
+    js_exts = (".js:", ".ts:", ".jsx:", ".tsx:", ".mjs:")
+    if any(ext in error_text for ext in js_exts) and "at " in error_text:
+        return parse_js_stacktrace(error_text)
+
+    # 兜底：尝试 Python 格式。
+    return parse_python_traceback(error_text)
+
+
+# —— 多语言异常建议 ——
+
+# 补充 Java 和 JS 通用错误的排查建议。
+EXCEPTION_ADVICE.update({
+    "NullPointerException": (
+        "空指针异常。排查步骤：1) 确认调用链中哪个变量为 null；"
+        "2) 检查对象初始化是否被跳过（条件分支、延迟加载失败）；"
+        "3) 对可能为 null 的返回值添加 null 检查或用 Optional 包装；"
+        "4) 查看堆栈中最后一行自己的代码，向上追溯 null 来源。"
+    ),
+    "ArrayIndexOutOfBoundsException": (
+        "数组索引越界。排查步骤：1) 检查循环边界条件是否正确；"
+        "2) 确认数组长度和访问索引的关系（索引从 0 开始）；"
+        "3) 对动态索引来源（方法参数、计算结果）增加范围校验。"
+    ),
+    "ClassNotFoundException": (
+        "类未找到。排查步骤：1) 确认类名拼写正确（包含完整包名）；"
+        "2) 检查依赖是否在 pom.xml / build.gradle 中声明；"
+        "3) 确认 JAR 文件是否在 classpath 中。"
+    ),
+    "JavaIOException": (
+        "IO 异常。排查步骤：1) 确认文件路径是否正确；"
+        "2) 检查文件权限（是否可读/可写）；3) 确认文件未被其他进程锁定。"
+    ),
+    "NodeError": (
+        "Node.js 错误。排查步骤：1) 检查模块路径是否正确；"
+        "2) 确认依赖已安装（npm install）；3) 检查文件权限和端口占用。"
+    ),
+    "SyntaxError": (
+        "语法错误。排查步骤：1) 检查错误提示行的括号、引号是否闭合；"
+        "2) 确认使用了正确的语法版本（ES6 vs CommonJS）；"
+        "3) 对 JSX/TSX 文件确认转译工具配置正确。"
+    ),
+    "ReferenceError": (
+        "引用错误。排查步骤：1) 确认变量名拼写正确（包括大小写）；"
+        "2) 检查变量是否在当前作用域内定义；"
+        "3) 确认 import / require 语句正确导出了所需符号。"
+    ),
+    "TypeError_JS": (
+        "JS 类型错误。排查步骤：1) 检查是否对 undefined/null 调用了方法；"
+        "2) 确认回调函数的参数顺序是否正确；"
+        "3) 使用 typeof 校验变量类型后再操作。"
+    ),
+})

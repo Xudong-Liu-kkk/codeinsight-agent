@@ -32,7 +32,7 @@ dev = ["pytest>=8.3.0"]
 def test_run_deps_missing_pyproject(tmp_path):
     """验证：无 pyproject.toml 时返回结构化错误。"""
     report = run_deps(str(tmp_path))
-    assert report.findings[0].title == "pyproject.toml 不存在"
+    assert "配置文件" in report.findings[0].title
 
 
 def test_run_deps_invalid_root():
