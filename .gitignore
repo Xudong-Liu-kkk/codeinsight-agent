@@ -26,6 +26,7 @@ dist/
 
 # CodeInsight Agent 项目记忆
 .codeinsight/
+.claude/
 
 # 编辑器与 IDE 本地状态
 .idea/

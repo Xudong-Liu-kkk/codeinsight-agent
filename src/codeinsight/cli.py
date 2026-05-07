@@ -7,6 +7,7 @@ V1 先固定命令协议与输出格式，再逐步增强内部分析能力，
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 from codeinsight.agent import run_ask, run_fix, run_pr_review, run_review
@@ -157,8 +158,14 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """CLI 主入口：解析参数并分发到对应引擎函数。"""
 
-    # 先加载当前目录的 .env（如果存在）。
+    # 加载 .env：优先级从高到低
+    #   1. 当前目录的 .env
+    #   2. 用户 home 目录的 .codeinsight.env（全局配置，适合 uv tool install 场景）
+    #   3. --root 指定的项目目录的 .env
     load_env_from_dir(".")
+
+    # 全局安装时 .env 不在 agent 项目目录里，查 home 目录兜底。
+    load_env_from_dir(str(Path.home()))
 
     # 先构建参数解析器，确保命令协议集中定义。
     parser = _build_parser()
@@ -239,8 +246,6 @@ def main(argv: list[str] | None = None) -> int:
 
     # 根据命令类型分发到记忆清空逻辑。
     if args.command == "memory-clear":
-        from pathlib import Path
-
         root_path = Path(args_dict["root"]).resolve()
         if root_path.exists() and root_path.is_dir():
             memory = ProjectMemory(root=root_path)

@@ -25,7 +25,7 @@ DEFAULT_QWEN_MODEL = "qwen-plus"
 # DEFAULT_OLLAMA_BASE_URL 为本地 Ollama OpenAI 兼容接口地址。
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434/v1"
 # DEFAULT_OLLAMA_MODEL 为 Ollama 默认模型名。
-DEFAULT_OLLAMA_MODEL = "Qwen3:8"
+DEFAULT_OLLAMA_MODEL = "qwen3:8b"
 
 
 @dataclass(slots=True)

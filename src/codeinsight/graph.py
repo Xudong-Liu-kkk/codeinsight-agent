@@ -17,7 +17,6 @@ Synthesizer Agent — 无工具，汇总生成结构化最终回答。
 
 import sys
 from typing import Annotated, TypedDict
-
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph

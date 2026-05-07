@@ -9,7 +9,17 @@
 ## 快速开始
 
 ```bash
+# 方式一：开发模式
 uv sync
+uv run codeinsight ask --root . --question "这个项目是做什么的？"
+
+# 方式二：全局安装（可在任意目录使用）
+uv tool install .
+cd ~/other-project
+codeinsight ask --root . --question "这个项目用了哪些依赖？"
+```
+
+```bash
 uv run codeinsight overview --root .
 uv run codeinsight search --root . --query "run_search"
 uv run codeinsight read --root . --path src/codeinsight/engine.py --start 1 --end 40
