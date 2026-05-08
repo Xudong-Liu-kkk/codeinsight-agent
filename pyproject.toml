@@ -1,7 +1,33 @@
 [project]
 name = "codeinsight-agent"
 version = "0.1.0"
-description = "只读代码库分析 Agent（uv 优先的 CLI 工作流）"
+description = "基于 LangGraph 多 Agent 协作的只读代码库分析工具"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Xudong Liu" },
+]
+keywords = [
+    "code-analysis",
+    "langchain",
+    "langgraph",
+    "multi-agent",
+    "cli",
+    "tree-sitter",
+    "llm",
+    "code-review",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 requires-python = ">=3.12"
 dependencies = [
     "langchain>=0.3",
@@ -14,6 +40,10 @@ dependencies = [
     "python-multipart>=0.0.12",
     "tree-sitter>=0.23",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Xudong-Liu-kkk/codeinsight-agent"
+Repository = "https://github.com/Xudong-Liu-kkk/codeinsight-agent"
 
 [project.scripts]
 # 暴露稳定的 CLI 入口，便于执行 `uv run codeinsight ...`。

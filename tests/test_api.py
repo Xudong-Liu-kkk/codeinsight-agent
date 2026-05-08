@@ -55,7 +55,7 @@ class TestApiHealth:
 
     def test_ask_rejects_empty_question(self, client):
         """验证：/ask 空问题返回错误。"""
-        resp = client.post("/ask?question=%20%20")
+        resp = client.post("/ask", data={"question": "  "})
         # run_ask 返回结构化错误，接口返回 200。
         assert resp.status_code == 200
 
@@ -66,7 +66,7 @@ class TestApiHealth:
 
     def test_ask_stream_returns_sse(self, client):
         """验证：/ask/stream 返回 SSE 流。"""
-        resp = client.post("/ask/stream?question=hello&provider=unknown")
+        resp = client.post("/ask/stream", data={"question": "hello", "provider": "unknown"})
         # 即使配置错误，也应返回 SSE 格式。
         assert resp.status_code == 200
         assert "text/event-stream" in resp.headers.get("content-type", "")
